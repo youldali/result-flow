@@ -10,7 +10,8 @@
     "build": "tsc",
     "clean": "rm -rf dist",
     "dev": "tsc --watch",
-    "test": "node --import tsx --test src/*.test.ts"
+    "test": "node --import tsx --test src/*.test.ts",
+    "test:only": "node --import tsx --test-only src/*.test.ts"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

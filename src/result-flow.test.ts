@@ -51,6 +51,44 @@ const advanceToNextTick = async (context: TestContext) => {
 };
 
 describe('ResultFlow', () => {
+  describe.only('gen', () => {
+    it('should allow to use ResultFlow in a generator function', async () => {
+      const resultFlow = ResultFlow.gen<Row, FlowFailure>(async function* () {
+        const row = yield* ResultFlow.lift(findById(1));
+        yield* ResultFlow.lift(validate(row, true));
+        return yield* ResultFlow.lift(updateById(row.id, { name: 'updated-name' }));
+      });
+
+      const result = await resultFlow.run();
+      const value = result._unsafeUnwrap();
+      deepEqual(value, { id: 1, name: 'updated-name' });
+    });
+
+    it('should allow to use Result in a generator function', async () => {
+      const resultFlow = ResultFlow.gen(async function* () {
+        const a = yield* N.ok(5);
+        const b = yield* N.ok(10);
+        return a + b;
+      });
+
+      const result = await resultFlow.run();
+      const value = result._unsafeUnwrap();
+      deepEqual(value, 15);
+    });
+
+    it('should allow to use ResultAsync in a generator function', async () => {
+      const resultFlow = ResultFlow.gen(async function* () {
+        const a = yield* N.okAsync(5);
+        const b = yield* N.okAsync(10);
+        return a + b;
+      });
+
+      const result = await resultFlow.run();
+      const value = result._unsafeUnwrap();
+      deepEqual(value, 15);
+    });
+  });
+
   describe('run', () => {
     it('should successfully run the whole flow when all the functions return a success result', async () => {
       const resultFlow = ResultFlow.of<Row, FlowFailure>(async ({ tryTo }) => {
@@ -821,6 +859,56 @@ describe('ResultFlow', () => {
       const recoveryError = 'recovery-error' as const;
       const mockAction: Mock<() => Result<never, string>> = mock.fn(() => N.err(error));
       const mockRecoveryAction = mock.fn(() => ResultFlow.from(() => N.err(recoveryError)));
+      const mockOnInterruption = mock.fn();
+
+      ResultFlow.from(mockAction).runPeriodically({
+        interval: defaultInterval,
+        recoveryAction: mockRecoveryAction,
+        onInterruption: mockOnInterruption,
+      });
+      await advanceToNextTick(context);
+      await advanceToNextTick(context);
+
+      deepEqual(mockAction.mock.callCount(), 1);
+      deepEqual(mockRecoveryAction.mock.callCount(), 1);
+      deepEqual(mockOnInterruption.mock.callCount(), 1);
+      deepEqual(mockOnInterruption.mock.calls[0]?.arguments[0], {
+        cause: 'failure',
+        error,
+        recoveryError: recoveryError,
+      });
+    });
+
+    it('should run a recovery action in case of failure, and stop the flow it the recovery fails. In which case it calls `onInterruption` callback (ResultAsync variant for recoveryAction)', async (context) => {
+      context.mock.timers.enable({ apis: ['setInterval'] });
+      const recoveryError = 'recovery-error' as const;
+      const mockAction: Mock<() => Result<never, string>> = mock.fn(() => N.err(error));
+      const mockRecoveryAction = mock.fn(() => N.errAsync(recoveryError));
+      const mockOnInterruption = mock.fn();
+
+      ResultFlow.from(mockAction).runPeriodically({
+        interval: defaultInterval,
+        recoveryAction: mockRecoveryAction,
+        onInterruption: mockOnInterruption,
+      });
+      await advanceToNextTick(context);
+      await advanceToNextTick(context);
+
+      deepEqual(mockAction.mock.callCount(), 1);
+      deepEqual(mockRecoveryAction.mock.callCount(), 1);
+      deepEqual(mockOnInterruption.mock.callCount(), 1);
+      deepEqual(mockOnInterruption.mock.calls[0]?.arguments[0], {
+        cause: 'failure',
+        error,
+        recoveryError: recoveryError,
+      });
+    });
+
+    it('should run a recovery action in case of failure, and stop the flow it the recovery fails. In which case it calls `onInterruption` callback (Result variant for recoveryAction)', async (context) => {
+      context.mock.timers.enable({ apis: ['setInterval'] });
+      const recoveryError = 'recovery-error' as const;
+      const mockAction: Mock<() => Result<never, string>> = mock.fn(() => N.err(error));
+      const mockRecoveryAction = mock.fn(() => N.err(recoveryError));
       const mockOnInterruption = mock.fn();
 
       ResultFlow.from(mockAction).runPeriodically({

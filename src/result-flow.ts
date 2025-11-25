@@ -222,20 +222,17 @@ export class ResultFlow<A, E> {
     };
   }
 
-  // static gen<E, A>(f: (() => AsyncGenerator<ResultFlow<E, any>, A, any>  )): ResultFlow<E, A> {
-  //   return ResultFlow.of<E, A>(async ({ tryTo }) => {
-  //     const generator = f();
-  //     let result = await generator.next();
-  //     console.log('>> result: ', result);
-  //     while (!result.done) {
-  //       const value = await (ResultFlow.isResultFlow(result.value) ? tryTo(result.value.run()) : tryTo(result.value));
-  //       console.log('>> value: ', value);
-  //       result = await generator.next(value);
-  //     }
-  //     console.log('>> final result: ', result);
-  //     return result.value as unknown as A;
-  //   });
-  // }
+  static gen<A, E>(f: (() => AsyncGenerator<ResultFlow<E, any> | Result<A, E> | ResultAsync<A, E>, A, any> )): ResultFlow<A, E> {
+    return ResultFlow.of<A, E>(async ({ tryTo }) => {
+      const generator = f();
+      let result = await generator.next();
+      while (!result.done) {
+        const value = await (ResultFlow.isResultFlow(result.value) ? tryTo(result.value.run()) : tryTo(result.value));
+        result = await generator.next(value);
+      }
+      return result.value;
+    });
+  }
 
   *[Symbol.iterator](): Generator<ResultFlow<any, E>, A, any> {
 		return yield this as any;
