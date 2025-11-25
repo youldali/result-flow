@@ -2,7 +2,7 @@ import { deepEqual, rejects } from 'node:assert';
 
 import { describe, it, mock, type Mock, type TestContext } from 'node:test';
 import * as N from 'neverthrow';
-import type { Result } from 'neverthrow';
+import { Result, ResultAsync } from 'neverthrow';
 import { ResultFlow } from './result-flow';
 
 type Row = {
@@ -65,7 +65,7 @@ describe('ResultFlow', () => {
     });
 
     it('should successfully run the whole flow when all the functions return a success result (chain variant)', async () => {
-      const result = await ResultFlow.lift(findById(1))
+      const result = await ResultFlow.from(findById(1))
         .chain((row) => validate(row, true))
         .chain((row) => updateById(row.id, { name: 'updated-name' }))
         .run();
@@ -112,7 +112,7 @@ describe('ResultFlow', () => {
 
     it('should return a failure as soon as a function return a failure result (chain variant)', async () => {
       const mockFn = mock.fn();
-      const result = await ResultFlow.lift(findById(2))
+      const result = await ResultFlow.from(findById(2))
         .chain((row) => {
           mockFn();
           return validate(row, true);
@@ -167,7 +167,7 @@ describe('ResultFlow', () => {
 
     it('should be immutable', async () => {
       let counter = 0;
-      const r1 = ResultFlow.lift(N.ok(10));
+      const r1 = ResultFlow.from(N.ok(10));
       await r1.run();
       const r2 = r1.ifSuccess(() => counter++);
       await r1.run();
@@ -179,26 +179,76 @@ describe('ResultFlow', () => {
     });
   });
 
+  describe('from', () => {
+    it('should lift the Result<A, E> into a `ResultFlow`', async () => {
+      const resultFlow = ResultFlow.from(N.ok(10));
+      const value = await resultFlow.run();
+      deepEqual(value._unsafeUnwrap(), 10);
+    });
+
+    it('should lift the () => Result<A, E> into a `ResultFlow`', async () => {
+      const resultFlow = ResultFlow.from(() => N.ok(10));
+      const value = await resultFlow.run();
+      deepEqual(value._unsafeUnwrap(), 10);
+    });
+
+    it('should lift the ResultAsync<A, E> into a `ResultFlow`', async () => {
+      const resultFlow = ResultFlow.from(N.okAsync(10));
+      const value = await resultFlow.run();
+      deepEqual(value._unsafeUnwrap(), 10);
+    });
+
+    it('should lift the () => ResultAsync<A, E> into a `ResultFlow`', async () => {
+      const resultFlow = ResultFlow.from(() => N.okAsync(10));
+      const value = await resultFlow.run();
+      deepEqual(value._unsafeUnwrap(), 10);
+    });
+
+    it('should lift the Promise<Result<A, E>> into a `ResultFlow`', async () => {
+      const resultFlow = ResultFlow.from(Promise.resolve(N.ok(10)));
+      const value = await resultFlow.run();
+      deepEqual(value._unsafeUnwrap(), 10);
+    });
+
+    it('should lift the () => Promise<Result<A, E>> into a `ResultFlow`', async () => {
+      const resultFlow = ResultFlow.from(() => Promise.resolve(N.ok(10)));
+      const value = await resultFlow.run();
+      deepEqual(value._unsafeUnwrap(), 10);
+    });
+  });
+
   describe('lift', () => {
-    it('should lift the Result<E, A> into a `ResultFlow`', async () => {
+    it('should lift the Result<A, E> into a `ResultFlow`', async () => {
       const resultFlow = ResultFlow.lift(N.ok(10));
       const value = await resultFlow.run();
       deepEqual(value._unsafeUnwrap(), 10);
     });
 
-    it('should lift the () => Result<E, A> into a `ResultFlow`', async () => {
+    it('should lift the () => Result<A, E> into a `ResultFlow`', async () => {
       const resultFlow = ResultFlow.lift(() => N.ok(10));
       const value = await resultFlow.run();
       deepEqual(value._unsafeUnwrap(), 10);
     });
 
-    it('should lift the Promise<Result<E, A>> into a `ResultFlow`', async () => {
+    it('should lift the ResultAsync<A, E> into a `ResultFlow`', async () => {
+      const resultFlow = ResultFlow.lift(N.okAsync(10));
+      const value = await resultFlow.run();
+      deepEqual(value._unsafeUnwrap(), 10);
+    });
+
+    it('should lift the () => ResultAsync<A, E> into a `ResultFlow`', async () => {
+      const resultFlow = ResultFlow.lift(() => N.okAsync(10));
+      const value = await resultFlow.run();
+      deepEqual(value._unsafeUnwrap(), 10);
+    });
+
+    it('should lift the Promise<Result<A, E>> into a `ResultFlow`', async () => {
       const resultFlow = ResultFlow.lift(Promise.resolve(N.ok(10)));
       const value = await resultFlow.run();
       deepEqual(value._unsafeUnwrap(), 10);
     });
 
-    it('should lift the () => Promise<Result<E, A>> into a `ResultFlow`', async () => {
+    it('should lift the () => Promise<Result<A, E>> into a `ResultFlow`', async () => {
       const resultFlow = ResultFlow.lift(() => Promise.resolve(N.ok(10)));
       const value = await resultFlow.run();
       deepEqual(value._unsafeUnwrap(), 10);
@@ -217,7 +267,7 @@ describe('ResultFlow', () => {
     });
 
     it('should return true when passed a `ResultFlow`', async () => {
-      const isResultFlow = ResultFlow.isResultFlow(ResultFlow.lift(N.ok(10)));
+      const isResultFlow = ResultFlow.isResultFlow(ResultFlow.from(N.ok(10)));
       deepEqual(isResultFlow, true);
     });
   });
@@ -247,7 +297,7 @@ describe('ResultFlow', () => {
     });
 
     it('should be immutable', async () => {
-      const r1 = ResultFlow.lift(N.ok(10));
+      const r1 = ResultFlow.from(N.ok(10));
       const r2 = r1.map((n) => n + 10);
 
       deepEqual((await r1.run())._unsafeUnwrap(), 10);
@@ -280,7 +330,7 @@ describe('ResultFlow', () => {
     });
 
     it('should be immutable', async () => {
-      const r1 = ResultFlow.lift(N.err('error'));
+      const r1 = ResultFlow.from(N.err('error'));
       const r2 = r1.mapError((error) => `${error} - transformed`);
 
       deepEqual(await r1.run(), N.err('error'));
@@ -292,21 +342,21 @@ describe('ResultFlow', () => {
     it('should run the function that returns a `ResultFlow` over the result when it is a success', async () => {
       const add10 = (n: number) => ResultFlow.of<number, never>(async () => n + 10);
 
-      const result = await ResultFlow.lift(N.ok(10)).chain(add10).run();
+      const result = await ResultFlow.from(N.ok(10)).chain(add10).run();
       const value = result._unsafeUnwrap();
       deepEqual(value, 20);
     });
 
-    it('should run the function that returns a `Promise<Result<E, A>>` over the result when it is a success', async () => {
+    it('should run the function that returns a `Promise<Result<A, E>>` over the result when it is a success', async () => {
       const add10 = (n: number) => Promise.resolve(N.ok(n + 10));
-      const result = await ResultFlow.lift(N.ok(10)).chain(add10).run();
+      const result = await ResultFlow.from(N.ok(10)).chain(add10).run();
       const value = result._unsafeUnwrap();
       deepEqual(value, 20);
     });
 
-    it('should run the function that returns a `Result<E, A>` over the result when it is a success', async () => {
+    it('should run the function that returns a `Result<A, E>` over the result when it is a success', async () => {
       const add10 = (n: number) => N.ok(n + 10);
-      const result = await ResultFlow.lift(N.ok(10)).chain(add10).run();
+      const result = await ResultFlow.from(N.ok(10)).chain(add10).run();
 
       const value = result._unsafeUnwrap();
       deepEqual(value, 20);
@@ -331,7 +381,7 @@ describe('ResultFlow', () => {
     });
 
     it('should be immutable', async () => {
-      const r1 = ResultFlow.lift(N.ok(10));
+      const r1 = ResultFlow.from(N.ok(10));
       // eslint-disable-next-line promise/prefer-await-to-then
       const r2 = r1.chain((n) => N.ok(n + 10));
 
@@ -368,7 +418,7 @@ describe('ResultFlow', () => {
 
     it('should be immutable', async () => {
       let counter = 0;
-      const r1 = ResultFlow.lift(N.ok(10));
+      const r1 = ResultFlow.from(N.ok(10));
       const r2 = r1.ifSuccess(() => counter++);
 
       await r1.run();
@@ -405,7 +455,7 @@ describe('ResultFlow', () => {
 
     it('should be immutable', async () => {
       let counter = 0;
-      const r1 = ResultFlow.lift(N.err('error'));
+      const r1 = ResultFlow.from(N.err('error'));
       const r2 = r1.ifFailure(() => counter++);
 
       await r1.run();
@@ -417,10 +467,10 @@ describe('ResultFlow', () => {
   describe('orElse', () => {
     it('should execute the alternative if the first is a failure', async () => {
       const mockCallback = mock.fn();
-      const resultFlow = ResultFlow.lift<string, number>(N.err('error'));
+      const resultFlow = ResultFlow.from<number, string>(N.err('error'));
       const alternativeResultFlow = (error: string) => {
         mockCallback(error);
-        return ResultFlow.lift(N.ok(20));
+        return ResultFlow.from(N.ok(20));
       };
       const ifSuccess = mock.fn();
       const result = await resultFlow.ifSuccess(ifSuccess).orElse(alternativeResultFlow).run();
@@ -431,9 +481,9 @@ describe('ResultFlow', () => {
       deepEqual(mockCallback.mock.calls[0]?.arguments, ['error']);
     });
 
-    it('should execute the alternative that return a Promise<Result<E, A>> if the first is a failure', async () => {
+    it('should execute the alternative that return a Promise<Result<A, E>> if the first is a failure', async () => {
       const mockCallback = mock.fn();
-      const resultFlow = ResultFlow.lift<string, number>(N.err('error'));
+      const resultFlow = ResultFlow.from<number, string>(N.err('error'));
       const alternativeResultFlow = (error: string) => {
         mockCallback(error);
         return Promise.resolve(N.ok(20));
@@ -446,9 +496,9 @@ describe('ResultFlow', () => {
       deepEqual(mockCallback.mock.calls[0]?.arguments, ['error']);
     });
 
-    it('should execute the alternative that return a Result<E, A> if the first is a failure', async () => {
+    it('should execute the alternative that return a Result<A, E> if the first is a failure', async () => {
       const mockCallback = mock.fn();
-      const resultFlow = ResultFlow.lift<string, number>(N.err('error'));
+      const resultFlow = ResultFlow.from<number, string>(N.err('error'));
       const alternativeResultFlow = (error: string) => {
         mockCallback(error);
         return N.ok(20);
@@ -464,10 +514,10 @@ describe('ResultFlow', () => {
     it('should not execute the alternative if the first is a success', async () => {
       const mockCallback = mock.fn();
 
-      const resultFlow = ResultFlow.lift<'error', number>(N.ok(10));
+      const resultFlow = ResultFlow.from<number, 'error'>(N.ok(10));
       const alternativeResultFlow = () => {
         mockCallback();
-        return ResultFlow.lift<never, number>(N.ok(20));
+        return ResultFlow.from<number, never>(N.ok(20));
       };
 
       const ifSuccess = mock.fn();
@@ -481,7 +531,7 @@ describe('ResultFlow', () => {
 
     it('should be immutable', async () => {
       let counter = 0;
-      const r1 = ResultFlow.lift<string, number>(N.err('error'));
+      const r1 = ResultFlow.from<number, string>(N.err('error'));
       const r2 = r1.orElse(() => {
         counter++;
         return N.ok(10);
@@ -502,7 +552,7 @@ describe('ResultFlow', () => {
       it('should retry the operation once when it fails', async () => {
         const defaultNumberOfRetries = 1;
         const mockAction = mock.fn(() => N.err(defaultError));
-        const resultFlow = ResultFlow.lift(mockAction).retryPolicy();
+        const resultFlow = ResultFlow.from(mockAction).retryPolicy();
 
         const result = await resultFlow.run();
 
@@ -512,7 +562,7 @@ describe('ResultFlow', () => {
 
       it('should not retry if the operation succeeds', async () => {
         const mockAction = mock.fn(() => N.ok(success));
-        const resultFlow = ResultFlow.lift(mockAction).retryPolicy();
+        const resultFlow = ResultFlow.from(mockAction).retryPolicy();
 
         const result = await resultFlow.run();
 
@@ -526,7 +576,7 @@ describe('ResultFlow', () => {
         const n = 5;
         const mockAction = mock.fn(() => N.err(defaultError));
         const beforeRetryMock = mock.fn();
-        const resultFlow = ResultFlow.lift(mockAction).retryPolicy({
+        const resultFlow = ResultFlow.from(mockAction).retryPolicy({
           maxRetries: n,
           beforeRetry: beforeRetryMock,
         });
@@ -551,7 +601,7 @@ describe('ResultFlow', () => {
           { times: numberOfFailures },
         );
         const beforeRetryMock = mock.fn();
-        const resultFlow = ResultFlow.lift(mockAction).retryPolicy({
+        const resultFlow = ResultFlow.from(mockAction).retryPolicy({
           maxRetries: n,
           beforeRetry: beforeRetryMock,
         });
@@ -571,7 +621,7 @@ describe('ResultFlow', () => {
         const n = -1;
         const mockAction = mock.fn(() => N.err(defaultError));
         const beforeRetryMock = mock.fn();
-        const resultFlow = ResultFlow.lift(mockAction).retryPolicy({
+        const resultFlow = ResultFlow.from(mockAction).retryPolicy({
           maxRetries: n,
           beforeRetry: beforeRetryMock,
         });
@@ -595,7 +645,7 @@ describe('ResultFlow', () => {
         );
         const beforeRetryMock = mock.fn();
         const condition = (error: string) => error === versionError;
-        const resultFlow = ResultFlow.lift(mockAction).retryPolicy({
+        const resultFlow = ResultFlow.from(mockAction).retryPolicy({
           maxRetries: n,
           beforeRetry: beforeRetryMock,
           condition,
@@ -617,7 +667,7 @@ describe('ResultFlow', () => {
         const mockAction = mock.fn(() => N.ok(success));
         const beforeRetryMock = mock.fn();
         const condition = (error: string) => error === versionError;
-        const resultFlow = ResultFlow.lift(mockAction).retryPolicy({
+        const resultFlow = ResultFlow.from(mockAction).retryPolicy({
           maxRetries: n,
           beforeRetry: beforeRetryMock,
           condition,
@@ -637,7 +687,7 @@ describe('ResultFlow', () => {
         () => N.err(defaultError),
         { times: 2 },
       );
-      const flow1 = ResultFlow.lift<string, number>(mockAction);
+      const flow1 = ResultFlow.from<number, string>(mockAction);
       const flow2 = flow1.retryPolicy({ maxRetries: 3 });
 
       const r1 = await flow1.run();
@@ -652,7 +702,7 @@ describe('ResultFlow', () => {
       const mockIfFailure = mock.fn();
       const mockOrElse = mock.fn(() => N.ok(success));
       const mockAction = mock.fn(() => N.err(defaultError));
-      const flow = ResultFlow.lift<string, number>(mockAction)
+      const flow = ResultFlow.from<number, string>(mockAction)
         .retryPolicy({ maxRetries: n })
         .ifFailure(mockIfFailure)
         .orElse(mockOrElse);
@@ -680,7 +730,7 @@ describe('ResultFlow', () => {
       );
       const mockOnInterruption = mock.fn();
 
-      ResultFlow.lift(mockAction).runPeriodically({
+      ResultFlow.from(mockAction).runPeriodically({
         interval: defaultInterval,
         onInterruption: mockOnInterruption,
       });
@@ -705,7 +755,7 @@ describe('ResultFlow', () => {
       );
       const mockOnInterruption = mock.fn();
 
-      const { interrupt } = ResultFlow.lift(mockAction).runPeriodically({
+      const { interrupt } = ResultFlow.from(mockAction).runPeriodically({
         interval: defaultInterval,
         onInterruption: mockOnInterruption,
       });
@@ -717,14 +767,14 @@ describe('ResultFlow', () => {
       deepEqual(mockOnInterruption.mock.calls[0]?.arguments[0], { cause: 'aborted' });
     });
 
-    it('should run a recovery action in case of failure, and stop the flow it the recovery fails. In which case it calls `onInterruption` callback', async (context) => {
+    it('should run a recovery action in case of failurA, End stop the flow it the recovery fails. In which case it calls `onInterruption` callback', async (context) => {
       context.mock.timers.enable({ apis: ['setInterval'] });
       const recoveryError = 'recovery-error' as const;
       const mockAction: Mock<() => Result<never, string>> = mock.fn(() => N.err(error));
       const mockRecoveryAction = mock.fn(() => Promise.resolve(N.err(recoveryError)));
       const mockOnInterruption = mock.fn();
 
-      ResultFlow.lift(mockAction).runPeriodically({
+      ResultFlow.from(mockAction).runPeriodically({
         interval: defaultInterval,
         recoveryAction: mockRecoveryAction,
         onInterruption: mockOnInterruption,
@@ -743,14 +793,14 @@ describe('ResultFlow', () => {
       });
     });
 
-    it('should run a recovery action in case of failure, and stop the flow it the recovery fails. In which case it calls `onInterruption` callback (ResultFlow variant for recoveryAction)', async (context) => {
+    it('should run a recovery action in case of failurA, End stop the flow it the recovery fails. In which case it calls `onInterruption` callback (ResultFlow variant for recoveryAction)', async (context) => {
       context.mock.timers.enable({ apis: ['setInterval'] });
       const recoveryError = 'recovery-error' as const;
       const mockAction: Mock<() => Result<never, string>> = mock.fn(() => N.err(error));
-      const mockRecoveryAction = mock.fn(() => ResultFlow.lift(() => N.err(recoveryError)));
+      const mockRecoveryAction = mock.fn(() => ResultFlow.from(() => N.err(recoveryError)));
       const mockOnInterruption = mock.fn();
 
-      ResultFlow.lift(mockAction).runPeriodically({
+      ResultFlow.from(mockAction).runPeriodically({
         interval: defaultInterval,
         recoveryAction: mockRecoveryAction,
         onInterruption: mockOnInterruption,
@@ -768,7 +818,7 @@ describe('ResultFlow', () => {
       });
     });
 
-    it('should run a recovery action in case of failure, and resume the repeat flow it if the recovery succeeds', async (context) => {
+    it('should run a recovery action in case of failurA, End resume the repeat flow it if the recovery succeeds', async (context) => {
       context.mock.timers.enable({ apis: ['setInterval'] });
       const mockAction: Mock<() => Result<undefined, string>> = mock.fn(
         () => N.ok(undefined),
@@ -778,7 +828,7 @@ describe('ResultFlow', () => {
       const mockRecoveryAction = mock.fn(() => Promise.resolve(N.ok(undefined)));
       const mockOnInterruption = mock.fn();
 
-      const { interrupt } = ResultFlow.lift(mockAction).runPeriodically({
+      const { interrupt } = ResultFlow.from(mockAction).runPeriodically({
         interval: defaultInterval,
         recoveryAction: mockRecoveryAction,
         onInterruption: mockOnInterruption,

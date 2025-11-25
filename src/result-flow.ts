@@ -1,11 +1,11 @@
 import * as N from 'neverthrow';
-import type { Result, Err } from 'neverthrow';
+import type { Result, ResultAsync, Err } from 'neverthrow';
 import * as PromiseHelpers from './promise-helpers';
 
 export interface ResultFlowHelpers<E> {
-  tryTo<A>(result: Result<A, E> | Promise<Result<A, E>>): Promise<A>;
+  tryTo<A>(result: Result<A, E> | Promise<Result<A, E>> | ResultAsync<A, E>): Promise<A>;
   tryTo<A, E2>(
-    result: Result<A, E2> | Promise<Result<A, E2>>,
+    result: Result<A, E2> | Promise<Result<A, E2>> | ResultAsync<A, E2>,
     options: {
       mapError: (value: E2) => E;
     },
@@ -53,16 +53,30 @@ export class ResultFlow<A, E> {
     return value instanceof ResultFlow;
   }
 
-  static lift<E, A>(
+  static from<A, E>(
     value:
       | Promise<Result<A, E>>
       | Result<A, E>
+      | ResultAsync<A, E>
       | (() => Promise<Result<A, E>>)
-      | (() => Result<A, E>),
+      | (() => Result<A, E>)
+      | (() => ResultAsync<A, E>),
   ): ResultFlow<A, E> {
     return ResultFlow.of<A, E>(async ({ tryTo }) => {
       return typeof value === 'function' ? tryTo(value()) : tryTo(value);
     });
+  }
+
+  static lift<A, E>(
+    value:
+      | Promise<Result<A, E>>
+      | Result<A, E>
+      | ResultAsync<A, E>
+      | (() => Promise<Result<A, E>>)
+      | (() => Result<A, E>)
+      | (() => ResultAsync<A, E>),
+  ): ResultFlow<A, E> {
+    return ResultFlow.from(value);
   }
 
   async run(): Promise<Result<A, E>> {
