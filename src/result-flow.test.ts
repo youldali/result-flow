@@ -87,10 +87,65 @@ describe('ResultFlow', () => {
       const value = result._unsafeUnwrap();
       deepEqual(value, 15);
     });
+
+    it('should return a failure as soon as a function returns a failure result', async () => {
+      const mockFn = mock.fn();
+      const resultFlow = ResultFlow.gen<Row, FlowFailure>(async function* () {
+        // the following operation fails
+        const row = yield* ResultFlow.lift(findById(2));
+        mockFn();
+        yield* validate(row, true);
+        return yield* ResultFlow.lift(updateById(1, { name: 'updated' }));
+      });
+
+      const result = await resultFlow.run();
+      const value = result._unsafeUnwrapErr();
+      deepEqual(value, { reason: 'not-found', operation: 'findById' });
+      deepEqual(mockFn.mock.callCount(), 0);
+    });
+
+    it('should return a failure as soon as a function returns a failure result (result variant)', async () => {
+      const mockFn = mock.fn();
+      const resultFlow = ResultFlow.gen(async function* () {
+        const a = yield* N.err("error");
+        mockFn();
+        const b = yield* N.ok(10);
+        return a + b;
+      });
+
+      const result = await resultFlow.run();
+      const value = result._unsafeUnwrapErr();
+      deepEqual(value, "error");
+      deepEqual(mockFn.mock.callCount(), 0);
+    });
+
+    it('should return a failure as soon as a function returns a failure result (resultAsync variant)', async () => {
+      const mockFn = mock.fn();
+      const resultFlow = ResultFlow.gen(async function* () {
+        const a = yield* N.errAsync("error");
+        mockFn();
+        const b = yield* N.okAsync(10);
+        return a + b;
+      });
+
+      const result = await resultFlow.run();
+      const value = result._unsafeUnwrapErr();
+      deepEqual(value, "error");
+      deepEqual(mockFn.mock.callCount(), 0);
+    });
+
+    it('should return a rejected promise if a function throws', async () => {
+      const resultFlow = ResultFlow.gen<string, FlowFailure>(async function* () {
+        yield* ResultFlow.lift(Promise.reject(new Error('error description')));
+        return 'ok';
+      });
+
+      await rejects(async () => resultFlow.run(), /error description/);
+    });
   });
 
   describe('run', () => {
-    it('should successfully run the whole flow when all the functions return a success result', async () => {
+    it('should successfully run the whole flow when all the functions returns a success result', async () => {
       const resultFlow = ResultFlow.of<Row, FlowFailure>(async ({ tryTo }) => {
         const row = await tryTo(findById(1));
         await tryTo(validate(row, true));
@@ -102,7 +157,7 @@ describe('ResultFlow', () => {
       deepEqual(value, { id: 1, name: 'updated-name' });
     });
 
-    it('should successfully run the whole flow when all the functions return a success result (chain variant)', async () => {
+    it('should successfully run the whole flow when all the functions returns a success result (chain variant)', async () => {
       const result = await ResultFlow.from(findById(1))
         .chain((row) => validate(row, true))
         .chain((row) => updateById(row.id, { name: 'updated-name' }))
@@ -132,7 +187,7 @@ describe('ResultFlow', () => {
       deepEqual(value, { id: 1, name: 'updated-name' });
     });
 
-    it('should return a failure as soon as a function return a failure result', async () => {
+    it('should return a failure as soon as a function returns a failure result', async () => {
       const mockFn = mock.fn();
       const resultFlow = ResultFlow.of<Row, FlowFailure>(async ({ tryTo }) => {
         // the following operation fails
@@ -148,7 +203,7 @@ describe('ResultFlow', () => {
       deepEqual(mockFn.mock.callCount(), 0);
     });
 
-    it('should return a failure as soon as a function return a failure result (chain variant)', async () => {
+    it('should return a failure as soon as a function returns a failure result (chain variant)', async () => {
       const mockFn = mock.fn();
       const result = await ResultFlow.from(findById(2))
         .chain((row) => {
