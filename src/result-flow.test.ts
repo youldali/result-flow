@@ -362,6 +362,14 @@ describe('ResultFlow', () => {
       deepEqual(value, 20);
     });
 
+    it('should run the function that returns a `ResultAsync<A, E>` over the result when it is a success', async () => {
+      const add10 = (n: number) => N.okAsync(n + 10);
+      const result = await ResultFlow.from(N.ok(10)).chain(add10).run();
+
+      const value = result._unsafeUnwrap();
+      deepEqual(value, 20);
+    });
+
     it('should do nothing when the result value is a failure', async () => {
       const resultFlow = ResultFlow.of<number, 'error'>(async ({ fail }) => {
         fail('error');
@@ -481,7 +489,7 @@ describe('ResultFlow', () => {
       deepEqual(mockCallback.mock.calls[0]?.arguments, ['error']);
     });
 
-    it('should execute the alternative that return a Promise<Result<A, E>> if the first is a failure', async () => {
+    it('should execute the alternative that returns a Promise<Result<A, E>> if the first is a failure', async () => {
       const mockCallback = mock.fn();
       const resultFlow = ResultFlow.from<number, string>(N.err('error'));
       const alternativeResultFlow = (error: string) => {
@@ -496,12 +504,27 @@ describe('ResultFlow', () => {
       deepEqual(mockCallback.mock.calls[0]?.arguments, ['error']);
     });
 
-    it('should execute the alternative that return a Result<A, E> if the first is a failure', async () => {
+    it('should execute the alternative that returns a Result<A, E> if the first is a failure', async () => {
       const mockCallback = mock.fn();
       const resultFlow = ResultFlow.from<number, string>(N.err('error'));
       const alternativeResultFlow = (error: string) => {
         mockCallback(error);
         return N.ok(20);
+      };
+      const ifSuccess = mock.fn();
+      const result = await resultFlow.ifSuccess(ifSuccess).orElse(alternativeResultFlow).run();
+      const value = result._unsafeUnwrap();
+      deepEqual(value, 20);
+      deepEqual(ifSuccess.mock.callCount(), 0);
+      deepEqual(mockCallback.mock.calls[0]?.arguments, ['error']);
+    });
+
+    it('should execute the alternative that returns a ResultAsync<A, E> if the first is a failure', async () => {
+      const mockCallback = mock.fn();
+      const resultFlow = ResultFlow.from<number, string>(N.err('error'));
+      const alternativeResultFlow = (error: string) => {
+        mockCallback(error);
+        return N.okAsync(20);
       };
       const ifSuccess = mock.fn();
       const result = await resultFlow.ifSuccess(ifSuccess).orElse(alternativeResultFlow).run();
@@ -767,7 +790,7 @@ describe('ResultFlow', () => {
       deepEqual(mockOnInterruption.mock.calls[0]?.arguments[0], { cause: 'aborted' });
     });
 
-    it('should run a recovery action in case of failurA, End stop the flow it the recovery fails. In which case it calls `onInterruption` callback', async (context) => {
+    it('should run a recovery action in case of failure, and stop the flow it the recovery fails. In which case it calls `onInterruption` callback', async (context) => {
       context.mock.timers.enable({ apis: ['setInterval'] });
       const recoveryError = 'recovery-error' as const;
       const mockAction: Mock<() => Result<never, string>> = mock.fn(() => N.err(error));
@@ -793,7 +816,7 @@ describe('ResultFlow', () => {
       });
     });
 
-    it('should run a recovery action in case of failurA, End stop the flow it the recovery fails. In which case it calls `onInterruption` callback (ResultFlow variant for recoveryAction)', async (context) => {
+    it('should run a recovery action in case of failure, and stop the flow it the recovery fails. In which case it calls `onInterruption` callback (ResultFlow variant for recoveryAction)', async (context) => {
       context.mock.timers.enable({ apis: ['setInterval'] });
       const recoveryError = 'recovery-error' as const;
       const mockAction: Mock<() => Result<never, string>> = mock.fn(() => N.err(error));
@@ -818,7 +841,7 @@ describe('ResultFlow', () => {
       });
     });
 
-    it('should run a recovery action in case of failurA, End resume the repeat flow it if the recovery succeeds', async (context) => {
+    it('should run a recovery action in case of failure, and resume the repeat flow it if the recovery succeeds', async (context) => {
       context.mock.timers.enable({ apis: ['setInterval'] });
       const mockAction: Mock<() => Result<undefined, string>> = mock.fn(
         () => N.ok(undefined),

@@ -22,6 +22,8 @@ const unwrap = <A, E>(result: Result<A, E>): A => {
   throw new ResultInterruption(result);
 };
 
+type PolymorphicResult<A, E> = ResultFlow<A, E> | Promise<Result<A, E>> | Result<A, E> | ResultAsync<A, E>;
+
 export class ResultFlow<A, E> {
   private constructor(private runPromise: (helpers: ResultFlowHelpers<E>) => Promise<A>) {}
   private helpers: ResultFlowHelpers<E> = {
@@ -107,7 +109,7 @@ export class ResultFlow<A, E> {
   }
 
   chain<A2, E2>(
-    f: (value: A) => ResultFlow<A2, E2> | Promise<Result<A2, E2>> | Result<A2, E2>,
+    f: (value: A) => PolymorphicResult<A2, E2>,
   ): ResultFlow<A2, E | E2> {
     return ResultFlow.of<A2, E | E2>(async ({ tryTo }) => {
       const result = await tryTo(this.run());
@@ -136,7 +138,7 @@ export class ResultFlow<A, E> {
   }
 
   orElse<E2>(
-    alternative: (error: E) => ResultFlow<A, E2> | Promise<Result<A, E2>> | Result<A, E2>,
+    alternative: (error: E) => PolymorphicResult<A, E2>,
   ): ResultFlow<A, E2> {
     return ResultFlow.of<A, E2>(async ({ tryTo }) => {
       const result = await this.run();
@@ -185,7 +187,7 @@ export class ResultFlow<A, E> {
     onInterruption,
     interval, // in ms
   }: {
-    recoveryAction?: (error: E) => Promise<Result<unknown, E2>> | ResultFlow<unknown, E2>;
+    recoveryAction?: (error: E) => PolymorphicResult<unknown, E2>;
     onInterruption?: (
       param: { cause: 'failure'; error: E; recoveryError: E2 | undefined } | { cause: 'aborted' },
     ) => void;
