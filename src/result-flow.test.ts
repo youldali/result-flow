@@ -2,7 +2,7 @@ import { deepEqual, rejects } from 'node:assert';
 
 import { describe, it, mock, type Mock, type TestContext } from 'node:test';
 import * as N from 'neverthrow';
-import { Result, ResultAsync } from 'neverthrow';
+import { Result } from 'neverthrow';
 import { ResultFlow } from './result-flow';
 
 type Row = {
@@ -51,7 +51,7 @@ const advanceToNextTick = async (context: TestContext) => {
 };
 
 describe('ResultFlow', () => {
-  describe.only('gen', () => {
+  describe('gen', () => {
     it('should allow to use ResultFlow in a generator function', async () => {
       const resultFlow = ResultFlow.gen<Row, FlowFailure>(async function* () {
         const row = yield* ResultFlow.lift(findById(1));
@@ -664,6 +664,7 @@ describe('ResultFlow', () => {
     const defaultError = 'error';
     const versionError = 'version-error';
 
+    
     describe('Given no parameters are provided', () => {
       it('should retry the operation once when it fails', async () => {
         const defaultNumberOfRetries = 1;
@@ -830,7 +831,7 @@ describe('ResultFlow', () => {
       deepEqual(mockIfFailure.mock.calls[0]?.arguments[0], defaultError);
       deepEqual(mockOrElse.mock.callCount(), 1);
       deepEqual(mockIfFailure.mock.calls[0]?.arguments[0], defaultError);
-    });
+    });  
   });
 
   describe('runPeriodically', () => {

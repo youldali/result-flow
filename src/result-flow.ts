@@ -1,6 +1,7 @@
 import * as N from 'neverthrow';
 import type { Result, ResultAsync, Err } from 'neverthrow';
 import * as PromiseHelpers from './promise-helpers';
+import { calculateDelay, wait, type DelayStrategy } from './delay';
 
 export interface ResultFlowHelpers<E> {
   tryTo<A>(result: Result<A, E> | Promise<Result<A, E>> | ResultAsync<A, E>): Promise<A>;
@@ -157,10 +158,12 @@ export class ResultFlow<A, E> {
     beforeRetry,
     condition = () => true,
     maxRetries = 1,
+    retryStrategy = { type: "immediate" },
   }: {
     condition?: (error: E) => boolean;
     beforeRetry?: (error: E, retryNumber: number) => Promise<void> | void;
     maxRetries?: number;
+    retryStrategy?: DelayStrategy;
   } = {}): ResultFlow<A, E> {
     return ResultFlow.of<A, E>(async ({ fail, tryTo }) => {
       for (let i = 0; i < maxRetries; i++) {
@@ -170,6 +173,10 @@ export class ResultFlow<A, E> {
           if (shouldRetry) {
             if (beforeRetry) {
               await beforeRetry(result.error, i + 1);
+            }
+            const delay = calculateDelay(retryStrategy, i + 1);
+            if (delay > 0) {
+              await wait(delay);
             }
             continue;
           } else {
