@@ -50,6 +50,9 @@ const advanceToNextTick = async (context: TestContext) => {
   await sleep(0);
 };
 
+type Context = { correlationId: string; userId: string; };
+const context: Context = { correlationId: 'test-correlation-id', userId: 'test-user-id' };
+
 describe('ResultFlow', () => {
   describe('gen', () => {
     it('should allow to use ResultFlow in a generator function', async () => {
@@ -135,16 +138,54 @@ describe('ResultFlow', () => {
     });
 
     it('should return a rejected promise if a function throws', async () => {
-      const resultFlow = ResultFlow.gen<string, FlowFailure>(async function* () {
+      const resultFlow = ResultFlow.gen(async function* () {
         yield* ResultFlow.lift(Promise.reject(new Error('error description')));
         return 'ok';
       });
 
       await rejects(async () => resultFlow.run(), /error description/);
     });
+
+    it('should be able to access the context', async () => {
+      const mockFn = mock.fn();
+      await ResultFlow.gen<number, Error, Context>(async function* ({ context }: { context: Context }) {
+        const a = yield* N.okAsync(5);
+        const b = yield* N.okAsync(10);
+        mockFn(context);
+        return a + b;
+      })
+      .run({ context });
+
+      deepEqual(mockFn.mock.calls[0]?.arguments, [context]);
+    });
+
+    it('should be able to access the context from other ResultFlows', async () => {
+      const mockFn = mock.fn();
+      await ResultFlow.gen<number, Error, Context>(async function* ({ context }: { context: Context }) {
+        const a = yield* ResultFlow.lift<number, never>(N.ok(5));
+        mockFn(context);
+        return a;
+      })
+      .run({ context });
+
+      deepEqual(mockFn.mock.calls[0]?.arguments, [context]);
+    });
   });
 
   describe('run', () => {
+     it('should accept a context', async () => {
+      type Context = { correlationId: string };
+      const resultFlow = ResultFlow.of<Row, FlowFailure, Context>(async ({ tryTo }) => {
+        const row = await tryTo(findById(1));
+        await tryTo(validate(row, true));
+        return tryTo(updateById(row.id, { name: 'updated-name' }));
+      });
+
+      const result = await resultFlow.run({ context: { correlationId: '123' } });
+      const value = result._unsafeUnwrap();
+      deepEqual(value, { id: 1, name: 'updated-name' });
+    });
+
     it('should successfully run the whole flow when all the functions returns a success result', async () => {
       const resultFlow = ResultFlow.of<Row, FlowFailure>(async ({ tryTo }) => {
         const row = await tryTo(findById(1));
@@ -489,6 +530,21 @@ describe('ResultFlow', () => {
       deepEqual((await r1.run())._unsafeUnwrap(), 10);
       deepEqual((await r2.run())._unsafeUnwrap(), 20);
     });
+
+    it('should access the context', async () => {
+      type Context = { correlationId: string };
+      const resultFlow = ResultFlow.of<number, never, Context>(async () => {
+        return 10;
+      });
+      const add10 = (n: number, context: Context) =>
+        ResultFlow.of<number, never>(async () => {
+          console.log('>> chain context', context);
+          return n + 10;
+        });
+      const result = await resultFlow.chain(add10).run({ context: { correlationId: '123' } });
+      const value = result._unsafeUnwrap();
+      deepEqual(value, 20);
+    });
   });
 
   describe('ifSuccess', () => {
@@ -525,6 +581,19 @@ describe('ResultFlow', () => {
       await r1.run();
       await r2.run();
       deepEqual(counter, 1);
+    });
+
+    it.only('should access the context', async () => {
+      type Context = { correlationId: string };
+      const resultFlow = ResultFlow.of<number, never, Context>(async (_, { context }) => {
+        return 10;
+      });
+      const effect = mock.fn();
+      const result = await resultFlow.ifSuccess(effect).run({ context: { correlationId: '123' } });
+      const value = result._unsafeUnwrap();
+
+      deepEqual(effect.mock.calls[0]?.arguments, [10, { correlationId: '123' }]);
+      deepEqual(value, 10);
     });
   });
 
