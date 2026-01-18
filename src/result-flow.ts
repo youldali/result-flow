@@ -143,7 +143,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
         f(result.error, extras);
         fail(result.error);
       }
-      return (result as { value: A }).value;
+      return (result as N.Ok<A, E>).value;
     });
   }
 
@@ -242,6 +242,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
       },
     };
   }
+  
   static gen<A, E, C extends BaseContext = DefaultContext>(f: ((extras: { context: C }) => AsyncGenerator<ResultFlow<unknown, E, SubContext<C>> | ResultFlow<unknown, E, C> | Result<unknown, E> | ResultAsync<unknown, E>, A, unknown> )): ResultFlow<A, E, C> {
     return ResultFlow.of<A, E, C>(async ({ tryTo }, extras) => {
       const generator = f(extras);
