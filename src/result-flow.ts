@@ -27,9 +27,10 @@ type DefaultContext = Record<never, never>;
 type BaseContext = Record<string, any>;
 type SubContext<C> = { [K in keyof C]?: C[K] };
 type PolymorphicResult<A, E, C extends BaseContext = DefaultContext> = ResultFlow<A, E, C> | Promise<Result<A, E>> | Result<A, E> | ResultAsync<A, E>;
+type Extras<C extends BaseContext> = { context: C; abortSignal: AbortSignal };
 
 export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
-  private constructor(private runPromise: (helpers: ResultFlowHelpers<E>, extras: {context: C}) => Promise<A>) {}
+  private constructor(private runPromise: (helpers: ResultFlowHelpers<E>, extras: Extras<C>) => Promise<A>) {}
   private helpers: ResultFlowHelpers<E> = {
     tryTo<A1, E2>(
       result: Result<A1, E2> | Promise<Result<A1, E2>>,
@@ -50,7 +51,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
   };
 
   static of<A, E, C extends BaseContext = DefaultContext>(
-    builderFunction: (helpers: ResultFlowHelpers<E>, extras: {context: C}) => Promise<A>,
+    builderFunction: (helpers: ResultFlowHelpers<E>, extras: Extras<C>) => Promise<A>,
   ): ResultFlow<A, E, C> {
     return new ResultFlow<A, E, C>(builderFunction);
   }
@@ -87,12 +88,16 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
 
   async run(
     ...args: keyof C extends never
-      ? [] | [{ context: C }]
-      : [{ context: C }]
+      ? [] | [{ context: C, abortSignal?: AbortSignal }]
+      : [{ context: C, abortSignal?: AbortSignal }]
   ): Promise<Result<A, E>> {
-    const [{ context } = { context: {} as C }] = args;
+    let [{ context, abortSignal } = { context: {} as C }] = args;
+    if (!abortSignal) {
+      abortSignal = new AbortSignal();
+    }
+
     try {
-      return N.ok(await this.runPromise(this.helpers, {context}));
+      return N.ok(await this.runPromise(this.helpers, {context, abortSignal}));
     } catch (e: unknown) {
       if (e instanceof ResultInterruption) {
         return e.error;
@@ -101,14 +106,14 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     }
   }
 
-  map<A2>(f: (value: A, extras: { context: C }) => A2): ResultFlow<A2, E, C> {
+  map<A2>(f: (value: A, extras: Extras<C>) => A2): ResultFlow<A2, E, C> {
     return ResultFlow.of<A2, E, C>(async ({tryTo}, extras) => {
       const value = await tryTo(this.run(extras));
       return f(value, extras);
     });
   }
 
-  mapError<E2>(f: (value: E, extras: { context: C }) => E2): ResultFlow<A, E2, C> {
+  mapError<E2>(f: (value: E, extras: Extras<C>) => E2): ResultFlow<A, E2, C> {
     return ResultFlow.of<A, E2, C>(async ({ fail }, extras) => {
       const result = await this.run(extras);
       if (result.isErr()) {
@@ -128,15 +133,15 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     });
   }
 
-  ifSuccess(f: (value: A, extras: { context: C }) => void): ResultFlow<A, E, C> {
-    return ResultFlow.of<A, E, C>(async ({ tryTo }, {context}) => {
-      const result = await tryTo(this.run({context}));
-      f(result, { context });
+  ifSuccess(f: (value: A, extras: Extras<C>) => void): ResultFlow<A, E, C> {
+    return ResultFlow.of<A, E, C>(async ({ tryTo }, extras) => {
+      const result = await tryTo(this.run(extras));
+      f(result, extras);
       return result;
     });
   }
 
-  ifFailure(f: (value: E, extras: { context: C }) => void): ResultFlow<A, E, C> {
+  ifFailure(f: (value: E, extras: Extras<C>) => void): ResultFlow<A, E, C> {
     return ResultFlow.of<A, E, C>(async ({ fail }, extras) => {
       const result = await this.run(extras);
       if (result.isErr()) {
@@ -170,7 +175,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     retryStrategy = { type: "immediate" },
   }: {
     condition?: (error: E) => boolean;
-    beforeRetry?: (error: E, retryNumber: number, extras: { context: C }) => Promise<void> | void;
+    beforeRetry?: (error: E, retryNumber: number, extras: Extras<C>) => Promise<void> | void;
     maxRetries?: number;
     retryStrategy?: DelayStrategy;
   } = {}): ResultFlow<A, E, C> {
@@ -203,17 +208,22 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     onInterruption,
     interval, // in ms
   }: {
-    recoveryAction?: (error: E, extras: { context: C }) => PolymorphicResult<unknown, E2>;
+    recoveryAction?: (error: E, extras: Extras<C>) => PolymorphicResult<unknown, E2>;
     onInterruption?: (
       param: { cause: 'failure'; error: E; recoveryError: E2 | undefined } | { cause: 'aborted' },
     ) => void;
     interval: number;
   },
   ...args: keyof C extends never
-    ? [] | [{ context: C }]
-    : [{ context: C }]
+    ? [] | [{ context: C, abortSignal?: AbortSignal }]
+    : [{ context: C, abortSignal?: AbortSignal }]
   ): { interrupt: () => void } {
-    const [extras = { context: {} as C }] = args;
+    let [{context, abortSignal} = { context: {} as C }] = args;
+    if (!abortSignal) {
+      abortSignal = new AbortSignal();
+    }
+    const extras: Extras<C> = { context, abortSignal };
+
     const intervalId = setInterval(async () => {
       const result = await this.run(extras);
       if (result.isErr()) {
@@ -242,8 +252,8 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
       },
     };
   }
-  
-  static gen<A, E, C extends BaseContext = DefaultContext>(f: ((extras: { context: C }) => AsyncGenerator<ResultFlow<unknown, E, SubContext<C>> | ResultFlow<unknown, E, C> | Result<unknown, E> | ResultAsync<unknown, E>, A, unknown> )): ResultFlow<A, E, C> {
+
+  static gen<A, E, C extends BaseContext = DefaultContext>(f: ((extras: Extras<C>) => AsyncGenerator<ResultFlow<unknown, E, SubContext<C>> | ResultFlow<unknown, E, C> | Result<unknown, E> | ResultAsync<unknown, E>, A, unknown> )): ResultFlow<A, E, C> {
     return ResultFlow.of<A, E, C>(async ({ tryTo }, extras) => {
       const generator = f(extras);
       let result = await generator.next();
