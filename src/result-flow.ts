@@ -27,7 +27,7 @@ type DefaultContext = Record<never, never>;
 type BaseContext = Record<string, any>;
 type SubContext<C> = { [K in keyof C]?: C[K] };
 type PolymorphicResult<A, E, C extends BaseContext = DefaultContext> = ResultFlow<A, E, C> | Promise<Result<A, E>> | Result<A, E> | ResultAsync<A, E>;
-type Extras<C extends BaseContext> = { context: C; abortSignal: AbortSignal };
+type Extras<C extends BaseContext> = { context: C; };
 
 export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
   private constructor(private runPromise: (helpers: ResultFlowHelpers<E>, extras: Extras<C>) => Promise<A>) {}
@@ -88,16 +88,13 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
 
   async run(
     ...args: keyof C extends never
-      ? [] | [{ context: C, abortSignal?: AbortSignal }]
-      : [{ context: C, abortSignal?: AbortSignal }]
+      ? [] | [{ context: C }]
+      : [{ context: C }]
   ): Promise<Result<A, E>> {
-    let [{ context, abortSignal } = { context: {} as C }] = args;
-    if (!abortSignal) {
-      abortSignal = new AbortSignal();
-    }
+    const [{ context } = { context: {} as C }] = args;
 
     try {
-      return N.ok(await this.runPromise(this.helpers, {context, abortSignal}));
+      return N.ok(await this.runPromise(this.helpers, {context}));
     } catch (e: unknown) {
       if (e instanceof ResultInterruption) {
         return e.error;
@@ -203,26 +200,18 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     });
   }
 
-  runPeriodically<E2>({
-    recoveryAction,
-    onInterruption,
-    interval, // in ms
-  }: {
-    recoveryAction?: (error: E, extras: Extras<C>) => PolymorphicResult<unknown, E2>;
-    onInterruption?: (
-      param: { cause: 'failure'; error: E; recoveryError: E2 | undefined } | { cause: 'aborted' },
-    ) => void;
-    interval: number;
-  },
-  ...args: keyof C extends never
-    ? [] | [{ context: C, abortSignal?: AbortSignal }]
-    : [{ context: C, abortSignal?: AbortSignal }]
-  ): { interrupt: () => void } {
-    let [{context, abortSignal} = { context: {} as C }] = args;
-    if (!abortSignal) {
-      abortSignal = new AbortSignal();
-    }
-    const extras: Extras<C> = { context, abortSignal };
+  runPeriodically<E2>(
+    params: {
+      recoveryAction?: (error: E, extras: Extras<C>) => PolymorphicResult<unknown, E2>;
+      onInterruption?: (
+        param: { cause: 'failure'; error: E; recoveryError: E2 | undefined } | { cause: 'aborted' },
+      ) => void;
+      interval: number;
+      abortSignal?: AbortSignal;
+    } & (keyof C extends never ? { context?: C } : { context: C })
+  ): void {
+    const { recoveryAction, onInterruption, interval, context = {} as C, abortSignal } = params;
+    const extras: Extras<C> = { context };
 
     const intervalId = setInterval(async () => {
       const result = await this.run(extras);
@@ -245,12 +234,12 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
       }
     }, interval);
 
-    return {
-      interrupt: () => {
+    if (abortSignal) {
+      abortSignal.addEventListener('abort', () => {
         clearInterval(intervalId);
         onInterruption?.({ cause: 'aborted' });
-      },
-    };
+      });
+    }
   }
 
   static gen<A, E, C extends BaseContext = DefaultContext>(f: ((extras: Extras<C>) => AsyncGenerator<ResultFlow<unknown, E, SubContext<C>> | ResultFlow<unknown, E, C> | Result<unknown, E> | ResultAsync<unknown, E>, A, unknown> )): ResultFlow<A, E, C> {

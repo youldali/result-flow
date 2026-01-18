@@ -613,7 +613,7 @@ describe('ResultFlow', () => {
       deepEqual(counter, 1);
     });
 
-    it.only('should access the context', async () => {
+    it('should access the context', async () => {
       const resultFlow = ResultFlow.of<number, never, Context>(async () => {
         return 10;
       });
@@ -662,7 +662,7 @@ describe('ResultFlow', () => {
       deepEqual(counter, 1);
     });
 
-    it.only('should access the context', async () => {
+    it('should access the context', async () => {
       const resultFlow = ResultFlow.of<number, string, Context>(async ({ fail }) => {
         fail('error');
         return 10;
@@ -1005,18 +1005,20 @@ describe('ResultFlow', () => {
       });
     });
 
-    it('should return a `interrupt` function that can interrupt the repeat flow when called, and call `onInterruption` with the cause `aborted`', async (context) => {
+    it('should interrupt the flow when the abortSignal is aborted, and call `onInterruption` with the cause `aborted`', async (context) => {
       context.mock.timers.enable({ apis: ['setInterval'] });
+      const abortController = new AbortController();
       const mockAction: Mock<() => Result<undefined, string>> = mock.fn(() =>
         N.ok(undefined),
       );
       const mockOnInterruption = mock.fn();
 
-      const { interrupt } = ResultFlow.from(mockAction).runPeriodically({
+      ResultFlow.from(mockAction).runPeriodically({
         interval: defaultInterval,
         onInterruption: mockOnInterruption,
+        abortSignal: abortController.signal,
       });
-      interrupt();
+      abortController.abort();
 
       await advanceToNextTick(context);
       deepEqual(mockAction.mock.callCount(), 0);
@@ -1127,6 +1129,7 @@ describe('ResultFlow', () => {
 
     it('should run a recovery action in case of failure, and resume the repeat flow it if the recovery succeeds', async (context) => {
       context.mock.timers.enable({ apis: ['setInterval'] });
+      const abortController = new AbortController();
       const mockAction: Mock<() => Result<undefined, string>> = mock.fn(
         () => N.ok(undefined),
         () => N.err(error),
@@ -1135,10 +1138,11 @@ describe('ResultFlow', () => {
       const mockRecoveryAction = mock.fn(() => Promise.resolve(N.ok(undefined)));
       const mockOnInterruption = mock.fn();
 
-      const { interrupt } = ResultFlow.from(mockAction).runPeriodically({
+      ResultFlow.from(mockAction).runPeriodically({
         interval: defaultInterval,
         recoveryAction: mockRecoveryAction,
         onInterruption: mockOnInterruption,
+        abortSignal: abortController.signal,
       });
       await advanceToNextTick(context);
       await advanceToNextTick(context);
@@ -1149,7 +1153,7 @@ describe('ResultFlow', () => {
       deepEqual(mockRecoveryAction.mock.callCount(), 1);
       deepEqual(mockOnInterruption.mock.callCount(), 0);
 
-      interrupt();
+      abortController.abort();
     });
   });
 });
