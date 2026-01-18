@@ -1,4 +1,4 @@
-import { deepEqual, rejects } from 'node:assert';
+import { deepEqual, fail, rejects } from 'node:assert';
 
 import { describe, it, mock, type Mock, type TestContext } from 'node:test';
 import * as N from 'neverthrow';
@@ -158,18 +158,6 @@ describe('ResultFlow', () => {
 
       deepEqual(mockFn.mock.calls[0]?.arguments, [context]);
     });
-
-    it('should be able to access the context from other ResultFlows', async () => {
-      const mockFn = mock.fn();
-      await ResultFlow.gen<number, Error, Context>(async function* ({ context }: { context: Context }) {
-        const a = yield* ResultFlow.lift<number, never>(N.ok(5));
-        mockFn(context);
-        return a;
-      })
-      .run({ context });
-
-      deepEqual(mockFn.mock.calls[0]?.arguments, [context]);
-    });
   });
 
   describe('run', () => {
@@ -311,6 +299,19 @@ describe('ResultFlow', () => {
       await r2.run();
       deepEqual(counter, 2);
     });
+
+    it('should be able to access the context', async () => {
+      const mockFn = mock.fn();
+      await ResultFlow.gen<number, Error, Context>(async function* ({ context }: { context: Context }) {
+        const a = yield* N.okAsync(5);
+        const b = yield* N.okAsync(10);
+        mockFn(context);
+        return a + b;
+      })
+      .run({ context });
+
+      deepEqual(mockFn.mock.calls[0]?.arguments, [context]);
+    });
   });
 
   describe('from', () => {
@@ -437,6 +438,22 @@ describe('ResultFlow', () => {
       deepEqual((await r1.run())._unsafeUnwrap(), 10);
       deepEqual((await r2.run())._unsafeUnwrap(), 20);
     });
+
+    it('should access the context', async () => {
+      const resultFlow = ResultFlow.of<number, never, Context>(async () => {
+        return 10;
+      });
+      const mockFn = mock.fn();
+      const add10 = (n: number, extras: {context: Context}) => {
+        mockFn(extras);
+        return n + 10;
+      }
+
+      const result = await resultFlow.map(add10).run({ context });
+      deepEqual(mockFn.mock.calls[0]?.arguments, [{context}]);
+      const value = result._unsafeUnwrap();
+      deepEqual(value, 20);
+    });
   });
 
   describe('mapError', () => {
@@ -469,6 +486,18 @@ describe('ResultFlow', () => {
 
       deepEqual(await r1.run(), N.err('error'));
       deepEqual(await r2.run(), N.err('error - transformed'));
+    });
+
+    it('should access the context', async () => {
+      const mockFn = mock.fn();
+      const r = ResultFlow
+      .from<string, string, Context>(N.err('error'))
+      .mapError((error, extras: {context: Context}) => {
+        mockFn(extras);
+        return `${error} - transformed`;
+      });
+      deepEqual(mockFn.mock.calls[0]?.arguments, [{context}]);
+      deepEqual(await r.run({context}), N.err('error - transformed'));
     });
   });
 
@@ -524,7 +553,6 @@ describe('ResultFlow', () => {
 
     it('should be immutable', async () => {
       const r1 = ResultFlow.from(N.ok(10));
-      // eslint-disable-next-line promise/prefer-await-to-then
       const r2 = r1.chain((n) => N.ok(n + 10));
 
       deepEqual((await r1.run())._unsafeUnwrap(), 10);
@@ -532,17 +560,19 @@ describe('ResultFlow', () => {
     });
 
     it('should access the context', async () => {
-      type Context = { correlationId: string };
+      const mockFn = mock.fn();
       const resultFlow = ResultFlow.of<number, never, Context>(async () => {
         return 10;
       });
-      const add10 = (n: number, context: Context) =>
-        ResultFlow.of<number, never>(async () => {
-          console.log('>> chain context', context);
+      const add10 = (n: number, extras: {context: Context}) => {
+        mockFn(extras);
+        return ResultFlow.of<number, never>(async () => {
           return n + 10;
         });
-      const result = await resultFlow.chain(add10).run({ context: { correlationId: '123' } });
+      };
+      const result = await resultFlow.chain(add10).run({ context });
       const value = result._unsafeUnwrap();
+      deepEqual(mockFn.mock.calls[0]?.arguments, [{context}]);
       deepEqual(value, 20);
     });
   });
@@ -584,15 +614,14 @@ describe('ResultFlow', () => {
     });
 
     it.only('should access the context', async () => {
-      type Context = { correlationId: string };
-      const resultFlow = ResultFlow.of<number, never, Context>(async (_, { context }) => {
+      const resultFlow = ResultFlow.of<number, never, Context>(async () => {
         return 10;
       });
       const effect = mock.fn();
-      const result = await resultFlow.ifSuccess(effect).run({ context: { correlationId: '123' } });
+      const result = await resultFlow.ifSuccess(effect).run({ context });
       const value = result._unsafeUnwrap();
 
-      deepEqual(effect.mock.calls[0]?.arguments, [10, { correlationId: '123' }]);
+      deepEqual(effect.mock.calls[0]?.arguments, [10, { context }]);
       deepEqual(value, 10);
     });
   });
@@ -631,6 +660,17 @@ describe('ResultFlow', () => {
       await r1.run();
       await r2.run();
       deepEqual(counter, 1);
+    });
+
+    it.only('should access the context', async () => {
+      const resultFlow = ResultFlow.of<number, string, Context>(async ({ fail }) => {
+        fail('error');
+        return 10;
+      });
+      const effect = mock.fn();
+      await resultFlow.ifFailure(effect).run({ context });
+
+      deepEqual(effect.mock.calls[0]?.arguments, ['error', { context }]);
     });
   });
 
@@ -725,6 +765,20 @@ describe('ResultFlow', () => {
       await r1.run();
       await r2.run();
       deepEqual(counter, 1);
+    });
+
+    it('should access the context', async () => {
+      const mockFn = mock.fn();
+      const resultFlow = ResultFlow.from<number, string, Context>(N.err('error'));
+      const alternativeResultFlow = (error: string, extras: {context: Context}) => {
+        mockFn(extras);
+        return ResultFlow.from(N.ok(20));
+      };
+      const result = await resultFlow.orElse(alternativeResultFlow).run({ context });
+      const value = result._unsafeUnwrap();
+
+      deepEqual(mockFn.mock.calls[0]?.arguments, [{context}]);
+      deepEqual(value, 20);
     });
   });
 
@@ -900,7 +954,24 @@ describe('ResultFlow', () => {
       deepEqual(mockIfFailure.mock.calls[0]?.arguments[0], defaultError);
       deepEqual(mockOrElse.mock.callCount(), 1);
       deepEqual(mockIfFailure.mock.calls[0]?.arguments[0], defaultError);
-    });  
+    });
+
+    it('should access the context', async () => {
+      const beforeRetryMock = mock.fn();
+      const n = 2;
+      const resultFlow = ResultFlow.from<number, string, Context>(N.err(defaultError));
+      const resultFlowWithRetry = resultFlow.retryPolicy({
+        maxRetries: n,
+        beforeRetry: beforeRetryMock,
+      });
+      await resultFlowWithRetry.run({ context });
+
+      for (let i = 1; i <= n; i++) {
+        deepEqual(beforeRetryMock.mock.calls[i - 1]?.arguments[0], defaultError);
+        deepEqual(beforeRetryMock.mock.calls[i - 1]?.arguments[1], i);
+        deepEqual(beforeRetryMock.mock.calls[i - 1]?.arguments[2], { context });
+      }
+    });
   });
 
   describe('runPeriodically', () => {

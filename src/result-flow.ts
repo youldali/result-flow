@@ -23,13 +23,13 @@ const unwrap = <A, E>(result: Result<A, E>): A => {
   throw new ResultInterruption(result);
 };
 
-type PolymorphicResult<A, E, C extends BaseContext = DefaultContext> = ResultFlow<A, E, C> | Promise<Result<A, E>> | Result<A, E> | ResultAsync<A, E>;
-
 type DefaultContext = Record<never, never>;
 type BaseContext = Record<string, any>;
 type SubContext<C> = { [K in keyof C]?: C[K] };
+type PolymorphicResult<A, E, C extends BaseContext = DefaultContext> = ResultFlow<A, E, C> | Promise<Result<A, E>> | Result<A, E> | ResultAsync<A, E>;
+
 export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
-  private constructor(private runPromise: (helpers: ResultFlowHelpers<E>, {context}: {context: C}) => Promise<A>) {}
+  private constructor(private runPromise: (helpers: ResultFlowHelpers<E>, extras: {context: C}) => Promise<A>) {}
   private helpers: ResultFlowHelpers<E> = {
     tryTo<A1, E2>(
       result: Result<A1, E2> | Promise<Result<A1, E2>>,
@@ -48,7 +48,6 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     },
     promiseHelpers: PromiseHelpers,
   };
-  private context!: C;
 
   static of<A, E, C extends BaseContext = DefaultContext>(
     builderFunction: (helpers: ResultFlowHelpers<E>, extras: {context: C}) => Promise<A>,
@@ -93,7 +92,6 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
   ): Promise<Result<A, E>> {
     const [{ context } = { context: {} as C }] = args;
     try {
-      this.context = context;
       return N.ok(await this.runPromise(this.helpers, {context}));
     } catch (e: unknown) {
       if (e instanceof ResultInterruption) {
@@ -172,7 +170,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     retryStrategy = { type: "immediate" },
   }: {
     condition?: (error: E) => boolean;
-    beforeRetry?: (error: E, retryNumber: number) => Promise<void> | void;
+    beforeRetry?: (error: E, retryNumber: number, extras: { context: C }) => Promise<void> | void;
     maxRetries?: number;
     retryStrategy?: DelayStrategy;
   } = {}): ResultFlow<A, E, C> {
@@ -183,7 +181,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
           const shouldRetry = condition(result.error);
           if (shouldRetry) {
             if (beforeRetry) {
-              await beforeRetry(result.error, i + 1);
+              await beforeRetry(result.error, i + 1, extras);
             }
             const delay = calculateDelay(retryStrategy, i + 1);
             if (delay > 0) {
@@ -205,20 +203,25 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     onInterruption,
     interval, // in ms
   }: {
-    recoveryAction?: (error: E) => PolymorphicResult<unknown, E2>;
+    recoveryAction?: (error: E, extras: { context: C }) => PolymorphicResult<unknown, E2>;
     onInterruption?: (
       param: { cause: 'failure'; error: E; recoveryError: E2 | undefined } | { cause: 'aborted' },
     ) => void;
     interval: number;
-  }): { interrupt: () => void } {
+  },
+  ...args: keyof C extends never
+    ? [] | [{ context: C }]
+    : [{ context: C }]
+  ): { interrupt: () => void } {
+    const [extras = { context: {} as C }] = args;
     const intervalId = setInterval(async () => {
-      const result = await this.run({context: this.context});
+      const result = await this.run(extras);
       if (result.isErr()) {
         let recoveryResult;
         if (recoveryAction) {
-          const recoveryResultPromise = recoveryAction(result.error);
+          const recoveryResultPromise = recoveryAction(result.error, extras);
           recoveryResult = await (ResultFlow.isResultFlow(recoveryResultPromise)
-            ? recoveryResultPromise.run({context: this.context})
+            ? recoveryResultPromise.run(extras)
             : recoveryResultPromise);
         }
         if (!recoveryResult || recoveryResult.isErr()) {
