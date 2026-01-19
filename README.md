@@ -270,14 +270,58 @@ const r3 = ResultFlow.lift(Promise.resolve(R.toSuccess(10)));
 const r4 = ResultFlow.lift(() => Promise.resolve(R.toSuccess(10)));
 ```
 
+### static `gen`
+
+Creates a `ResultFlow` using generator-style syntax. This provides an alternative, more imperative-looking syntax for building flows compared to `of`. Similar to async/await, you can `yield` on `ResultFlow`, `Result`, or `ResultAsync` values, and the flow will automatically unwrap success values or stop on failures.
+
+```ts
+ResultFlow.gen<A, E, C>(f: (extras: Extras<C>) => AsyncGenerator<ResultFlow<unknown, E, C> | Result<unknown, E> | ResultAsync<unknown, E>, A, unknown>): ResultFlow<A, E, C>
+```
+
+#### Examples
+
+```ts
+// Basic usage with ResultFlow
+const flow = ResultFlow.gen<Row, FlowFailure>(async function* () {
+  const data = yield* findById(1); // findById returns Promise<Result>
+  yield* validate(data, true); // validate returns Result
+  return yield* updateById(data.id, { name: 'updated-name' });
+});
+
+const result = await flow.run(); // Result<Row, FlowFailure>
+```
+
+```ts
+// Using with plain Results
+const flow = ResultFlow.gen(async function* () {
+  const a = yield* R.toSuccess(10);
+  const b = yield* R.toSuccess(5);
+  return a + b;
+});
+
+const result = await flow.run(); // Result<15, never>
+```
+
+```ts
+// Accessing context
+const flow = ResultFlow.gen<number, Error, Context>(async function* ({ context }) {
+  console.log(context.userId);
+  return yield* R.toSuccess(42);
+});
+
+await flow.run({ context: { userId: 'user-123' } });
+```
+
 ### `run`
 
 Executes the flow. Nothing gets executed until this method is called.
 It returns a **resolved promise** with a `Result` (from the general type helpers) inside.
 However if your code threw an exception, it does not intercept it and the promise is rejected.
 
+You can pass a `context` object that will be accessible in all methods throughout the flow (in `map`, `chain`, `ifSuccess`, etc.).
+
 ```ts
-(method) ResultFlow<E, A>.run(): Promise<R.Result<E, A>>
+(method) ResultFlow<E, A, C>.run(options?: { context: C }): Promise<R.Result<E, A>>
 ```
 
 #### Examples
@@ -291,12 +335,24 @@ const f = ResultFlow.of<'error', number>(async () => {
 }).run(); // Promise<R.Failure('error')>
 ```
 
+```ts
+// With context
+type Context = { userId: string; correlationId: string };
+
+const flow = ResultFlow.of<Data, Error, Context>(async ({ tryTo }, { context }) => {
+  console.log(`Processing for user: ${context.userId}`);
+  return tryTo(fetchData());
+});
+
+await flow.run({ context: { userId: 'user-123', correlationId: 'abc-456' } });
+```
+
 ### `map`
 
-Executes a function over a success
+Executes a function over a success. The function receives the success value and the extras object containing the context.
 
 ```ts
-(method) ResultFlow<E, A>.map<A2>(f: (value: A) => A2): ResultFlow<E, A2>
+(method) ResultFlow<E, A, C>.map<A2>(f: (value: A, extras: { context: C }) => A2): ResultFlow<E, A2, C>
 ```
 
 #### Examples
@@ -304,7 +360,7 @@ Executes a function over a success
 ```ts
 const r = ResultFlow
             .of<never, number>(async () => 10)
-            .map(value => value + 10);
+            .map(value => value + 10)
             .run(); // Promise<R.Success(20)>
 
 const f = ResultFlow
@@ -312,16 +368,26 @@ const f = ResultFlow
               fail('error');
               return 10;
             })
-            .map(value => value + 10); // not executed
+            .map(value => value + 10) // not executed
             .run(); // Promise<R.Failure('error')>
+```
+
+```ts
+// With context
+type Context = { multiplier: number };
+
+const r = ResultFlow
+            .of<number, never, Context>(async () => 10)
+            .map((value, { context }) => value * context.multiplier)
+            .run({ context: { multiplier: 3 } }); // Promise<R.Success(30)>
 ```
 
 ### `mapError`
 
-Executes a function over a failure
+Executes a function over a failure. The function receives the error value and the extras object containing the context.
 
 ```ts
-(method) ResultFlow<E, A>.mapError<E2>(f: (value: L) => L2): ResultFlow<E2, A>
+(method) ResultFlow<E, A, C>.mapError<E2>(f: (value: E, extras: { context: C }) => E2): ResultFlow<E2, A, C>
 ```
 
 #### Examples
@@ -329,7 +395,7 @@ Executes a function over a failure
 ```ts
 const r = ResultFlow
             .of<'error', number>(async () => 10)
-            .mapError(error => `transformed-${error}`);
+            .mapError(error => `transformed-${error}`)
             .run(); // Promise<R.Success(20)>
 
 const f = ResultFlow
@@ -337,8 +403,25 @@ const f = ResultFlow
               fail('error');
               return 10;
             })
-            .mapError(error => `transformed-${error}`);
+            .mapError(error => `transformed-${error}`)
             .run(); // Promise<R.Failure('transformed-error')>
+```
+
+```ts
+// With context
+type Context = { requestId: string };
+
+const f = ResultFlow
+            .of<'error', number, Context>(async ({ fail }) => {
+              fail('error');
+              return 10;
+            })
+            .mapError((error, { context }) => ({
+              error,
+              requestId: context.requestId
+            }))
+            .run({ context: { requestId: 'req-123' } }); 
+            // Promise<R.Failure({ error: 'error', requestId: 'req-123' })>
 ```
 
 ### `chain`
@@ -348,10 +431,11 @@ Chains a success `ResultFlow` with:
 - a function that returns a `Promise<Result>`
 - a function that returns a `Result`
 
+The chained function receives the success value and the extras object containing the context.
 returns a `ResultFlow` which is the result of the composition
 
 ```ts
-(method) ResultFlow<E, A>.chain<E2, A2>(f: (value: A) => ResultFlow<E2, A2> | Promise<R.Result<E2, A2>> | R.Result<E2, A2>): ResultFlow<E | E2, A2>
+(method) ResultFlow<E, A, C>.chain<E2, A2, C2>(f: (value: A, extras: { context: C & C2 }) => ResultFlow<E2, A2, C2> | Promise<R.Result<E2, A2>> | R.Result<E2, A2>): ResultFlow<E | E2, A2, C & C2>
 ```
 
 #### Examples
@@ -366,10 +450,23 @@ const success = flowWithSuccess.chain(getSecondFlow).run(); // Promise<R.Success
 const failure = flowWithFailure.chain(getSecondFlow).run(); // Promise<R.Failure('error')>
 ```
 
+```ts
+// With context
+type Context = { apiUrl: string };
+
+const flow = ResultFlow
+  .of<User, Error, Context>(async ({ tryTo }) => tryTo(getUser(1)))
+  .chain((user, { context }) => 
+    fetchFromApi(`${context.apiUrl}/users/${user.id}/details`)
+  );
+
+await flow.run({ context: { apiUrl: 'https://api.example.com' } });
+```
+
 ### `orElse`
 
-Executes the alternative of the previous flow is a failure.
-This takes as a parameter the previous flow failure, and accepts:
+Executes the alternative if the previous flow is a failure.
+The alternative function receives the previous flow failure and the extras object containing the context, and accepts:
 - a function that returns a `ResultFlow`
 - a function that returns a `Promise<Result>`
 - a function that returns a `Result`
@@ -377,7 +474,7 @@ This takes as a parameter the previous flow failure, and accepts:
 returns a `ResultFlow` which is the result of the composition
 
 ```ts
-(method) ResultFlow<E, A>.orElse<E2>(alternative: (error: E) => ResultFlow<E2, A> | Promise<R.Result<E2, A>> | R.Result<E2, A>): ResultFlow<E | E2, A>
+(method) ResultFlow<E, A, C>.orElse<E2, C2>(alternative: (error: E, extras: { context: C & C2 }) => ResultFlow<E2, A, C2> | Promise<R.Result<E2, A>> | R.Result<E2, A>): ResultFlow<E2, A, C & C2>
 ```
 
 #### Examples
@@ -394,12 +491,28 @@ const r1 = flowWithSuccess.orElse((_error) => alternative).run(); // Promise<R.S
 const r2 = flowWithFailure.orElse((_error) => alternative).run(); // Promise<R.Success(100)>
 ```
 
+```ts
+// With context
+type Context = { fallbackUrl: string };
+
+const flow = ResultFlow
+  .of<Data, 'network-error', Context>(async ({ tryTo }) => 
+    tryTo(fetchFromPrimarySource())
+  )
+  .orElse((error, { context }) => {
+    console.log(`Primary failed with ${error}, trying ${context.fallbackUrl}`);
+    return fetchFromUrl(context.fallbackUrl);
+  });
+
+await flow.run({ context: { fallbackUrl: 'https://backup.example.com' } });
+```
+
 ### `ifSuccess`
 
-Executes an effect if the `ResultFlow` is a success
+Executes an effect if the `ResultFlow` is a success. The function receives the success value and the extras object containing the context.
 
 ```ts
-(method) ResultFlow<E, A>.ifSuccess(f: (value: R) => void): ResultFlow<E, A>
+(method) ResultFlow<E, A, C>.ifSuccess(f: (value: A, extras: { context: C }) => void): ResultFlow<E, A, C>
 ```
 
 #### Examples
@@ -416,12 +529,25 @@ const f = ResultFlow
   .run();
 ```
 
+```ts
+// With context
+type Context = { logger: Logger };
+
+const flow = ResultFlow
+  .of<Data, Error, Context>(async ({ tryTo }) => tryTo(fetchData()))
+  .ifSuccess((data, { context }) => {
+    context.logger.info(`Successfully fetched data: ${data.id}`);
+  });
+
+await flow.run({ context: { logger: myLogger } });
+```
+
 ### `ifFailure`
 
-Executes an effect if the `ResultFlow` is a failure
+Executes an effect if the `ResultFlow` is a failure. The function receives the error value and the extras object containing the context.
 
 ```ts
-(method) ResultFlow<E, A>.ifFailure(f: (value: L) => void): ResultFlow<E, A>
+(method) ResultFlow<E, A, C>.ifFailure(f: (value: E, extras: { context: C }) => void): ResultFlow<E, A, C>
 ```
 
 #### Examples
@@ -436,4 +562,180 @@ const f = ResultFlow
   .lift(R.toFailure('error'))
   .ifFailure((failure) => console.log(`the failure is ${failure}`)) // this will be executed
   .run();
+```
+
+```ts
+// With context
+type Context = { alertService: AlertService };
+
+const flow = ResultFlow
+  .of<Data, Error, Context>(async ({ tryTo }) => tryTo(fetchData()))
+  .ifFailure((error, { context }) => {
+    context.alertService.send(`Failed to fetch data: ${error.message}`);
+  });
+
+await flow.run({ context: { alertService: myAlertService } });
+```
+
+### `retryPolicy`
+
+Applies a retry policy to the flow. If the flow fails and matches the retry condition, it will be retried up to `maxRetries` times. The retry strategy can be either immediate or use exponential backoff.
+
+The `beforeRetry` callback receives the error, retry number, and the extras object containing the context.
+
+```ts
+(method) ResultFlow<E, A, C>.retryPolicy({
+  condition?: (error: E) => boolean;
+  beforeRetry?: (error: E, retryNumber: number, extras: { context: C }) => Promise<void> | void;
+  maxRetries?: number;
+  retryStrategy?: DelayStrategy;
+}): ResultFlow<E, A, C>
+```
+
+with `DelayStrategy` being:
+```ts
+type DelayStrategy = 
+  | { type: 'immediate' }
+  | { type: 'exponential'; initialDelay?: number; maxDelay?: number; factor?: number };
+```
+
+#### Examples
+
+```ts
+// Simple retry with default settings (1 retry, immediate)
+const flow = ResultFlow
+  .of<Data, 'network-error'>(async ({ tryTo }) => {
+    return tryTo(fetchDataFromApi());
+  })
+  .retryPolicy();
+
+await flow.run(); // Will retry once immediately if it fails
+```
+
+```ts
+// Retry with exponential backoff
+const flow = ResultFlow
+  .of<Data, 'network-error' | 'timeout'>(async ({ tryTo }) => {
+    return tryTo(fetchDataFromApi());
+  })
+  .retryPolicy({
+    maxRetries: 3,
+    retryStrategy: { 
+      type: 'exponential', 
+      initialDelay: 1000, // 1 second
+      maxDelay: 10000,    // 10 seconds max
+      factor: 2           // doubles each time
+    },
+    // Only retry on network errors, not timeouts
+    condition: (error) => error === 'network-error',
+    beforeRetry: (error, retryNumber) => {
+      console.log(`Attempt ${retryNumber} failed with ${error}, retrying...`);
+    }
+  });
+
+await flow.run();
+```
+
+```ts
+// With context
+type Context = { logger: Logger; requestId: string };
+
+const flow = ResultFlow
+  .of<Data, 'network-error', Context>(async ({ tryTo }, { context }) => {
+    context.logger.debug(`Attempt for request ${context.requestId}`);
+    return tryTo(fetchDataFromApi());
+  })
+  .retryPolicy({
+    maxRetries: 3,
+    retryStrategy: { type: 'exponential', initialDelay: 1000 },
+    beforeRetry: (error, retryNumber, { context }) => {
+      context.logger.warn(
+        `Request ${context.requestId} failed on attempt ${retryNumber}: ${error}`
+      );
+    }
+  });
+
+await flow.run({ context: { logger: myLogger, requestId: 'req-789' } });
+```
+
+### `runPeriodically`
+
+Runs the flow repeatedly at a fixed interval until it fails or is aborted. This is useful for monitoring tasks, health checks, or polling operations. You can optionally provide a recovery action that attempts to fix failures before stopping the flow.
+
+```ts
+(method) ResultFlow<E, A>.runPeriodically<E2>({
+  interval: number;
+  recoveryAction?: (error: E, extras: Extras<C>) => PolymorphicResult<unknown, E2>;
+  onInterruption?: (
+    param: 
+      | { cause: 'failure'; error: E; recoveryError: E2 | undefined } 
+      | { cause: 'aborted' }
+  ) => void;
+  abortSignal?: AbortSignal;
+  context?: C;
+}): void
+```
+
+#### Examples
+
+```ts
+// Simple health check that runs every 5 seconds
+const healthCheckFlow = ResultFlow.of<void, 'service-down'>(async ({ tryTo }) => {
+  return tryTo(checkServiceHealth());
+});
+
+healthCheckFlow.runPeriodically({
+  interval: 5000, // 5 seconds
+  onInterruption: ({ cause, error }) => {
+    if (cause === 'failure') {
+      console.error(`Service is down: ${error}`);
+      sendAlert(error);
+    }
+  }
+});
+```
+
+```ts
+// With recovery action
+const monitorFlow = ResultFlow.of<void, 'connection-lost'>(async ({ tryTo }) => {
+  return tryTo(checkConnection());
+});
+
+monitorFlow.runPeriodically({
+  interval: 10000, // 10 seconds
+  recoveryAction: (error) => {
+    console.log('Attempting to reconnect...');
+    return reconnect(); // Returns Promise<Result> or ResultFlow
+  },
+  onInterruption: ({ cause, error, recoveryError }) => {
+    if (cause === 'failure') {
+      console.error(`Failed: ${error}`);
+      if (recoveryError) {
+        console.error(`Recovery also failed: ${recoveryError}`);
+      }
+    }
+  }
+});
+```
+
+```ts
+// With abort signal for manual cancellation
+const controller = new AbortController();
+
+const pollingFlow = ResultFlow.of<Data, 'fetch-error'>(async ({ tryTo }) => {
+  return tryTo(pollForUpdates());
+});
+
+pollingFlow.runPeriodically({
+  interval: 2000,
+  abortSignal: controller.signal,
+  onInterruption: ({ cause }) => {
+    if (cause === 'aborted') {
+      console.log('Polling stopped by user');
+    }
+  }
+});
+
+// Later: stop polling
+controller.abort();
 ```
