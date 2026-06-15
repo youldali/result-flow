@@ -216,6 +216,22 @@ describe('ResultFlow', () => {
       deepEqual(value, { id: 1, name: 'updated-name' });
     });
 
+    it('should map tryTo failures when mapError is provided', async () => {
+      const resultFlow = ResultFlow.of<Row, { kind: 'flow-error'; cause: FlowFailure }>(
+        async ({ tryTo }) => {
+          return tryTo(findById(2), {
+            mapError: (error) => ({ kind: 'flow-error', cause: error }),
+          });
+        },
+      );
+
+      const result = await resultFlow.run();
+      deepEqual(result._unsafeUnwrapErr(), {
+        kind: 'flow-error',
+        cause: { reason: 'not-found', operation: 'findById' },
+      });
+    });
+
     it('should return a failure as soon as a function returns a failure result', async () => {
       const mockFn = mock.fn();
       const resultFlow = ResultFlow.of<Row, FlowFailure>(async ({ tryTo }) => {
@@ -350,6 +366,28 @@ describe('ResultFlow', () => {
       const value = await resultFlow.run();
       deepEqual(value._unsafeUnwrap(), 10);
     });
+
+    it('should preserve failures from all supported input variants', async () => {
+      deepEqual(await ResultFlow.from<number, string>(N.err('error')).run(), N.err('error'));
+      deepEqual(await ResultFlow.from<number, string>(() => N.err('error')).run(), N.err('error'));
+      deepEqual(await ResultFlow.from<number, string>(N.errAsync('error')).run(), N.err('error'));
+      deepEqual(await ResultFlow.from<number, string>(() => N.errAsync('error')).run(), N.err('error'));
+      deepEqual(await ResultFlow.from<number, string>(Promise.resolve(N.err('error'))).run(), N.err('error'));
+      deepEqual(await ResultFlow.from<number, string>(() => Promise.resolve(N.err('error'))).run(), N.err('error'));
+    });
+
+    it('should reject when the input promise rejects or factory throws', async () => {
+      await rejects(
+        () => ResultFlow.from<number, string>(Promise.reject<Result<number, string>>(new Error('promise rejected'))).run(),
+        /promise rejected/,
+      );
+      await rejects(
+        () => ResultFlow.from<number, string>(() => {
+          throw new Error('factory threw');
+        }).run(),
+        /factory threw/,
+      );
+    });
   });
 
   describe('lift', () => {
@@ -387,6 +425,28 @@ describe('ResultFlow', () => {
       const resultFlow = ResultFlow.lift(() => Promise.resolve(N.ok(10)));
       const value = await resultFlow.run();
       deepEqual(value._unsafeUnwrap(), 10);
+    });
+
+    it('should preserve failures from all supported input variants', async () => {
+      deepEqual(await ResultFlow.lift<number, string>(N.err('error')).run(), N.err('error'));
+      deepEqual(await ResultFlow.lift<number, string>(() => N.err('error')).run(), N.err('error'));
+      deepEqual(await ResultFlow.lift<number, string>(N.errAsync('error')).run(), N.err('error'));
+      deepEqual(await ResultFlow.lift<number, string>(() => N.errAsync('error')).run(), N.err('error'));
+      deepEqual(await ResultFlow.lift<number, string>(Promise.resolve(N.err('error'))).run(), N.err('error'));
+      deepEqual(await ResultFlow.lift<number, string>(() => Promise.resolve(N.err('error'))).run(), N.err('error'));
+    });
+
+    it('should reject when the input promise rejects or factory throws', async () => {
+      await rejects(
+        () => ResultFlow.lift<number, string>(Promise.reject<Result<number, string>>(new Error('promise rejected'))).run(),
+        /promise rejected/,
+      );
+      await rejects(
+        () => ResultFlow.lift<number, string>(() => {
+          throw new Error('factory threw');
+        }).run(),
+        /factory threw/,
+      );
     });
   });
 
@@ -454,6 +514,14 @@ describe('ResultFlow', () => {
       const value = result._unsafeUnwrap();
       deepEqual(value, 20);
     });
+
+    it('should reject when the map callback throws', async () => {
+      const resultFlow = ResultFlow.from<number, never>(N.ok(10)).map(() => {
+        throw new Error('map failed');
+      });
+
+      await rejects(() => resultFlow.run(), /map failed/);
+    });
   });
 
   describe('mapError', () => {
@@ -499,6 +567,14 @@ describe('ResultFlow', () => {
       .run({ context });
       deepEqual(mockFn.mock.calls[0]?.arguments, [{context}]);
       deepEqual(r, N.err('error - transformed'));
+    });
+
+    it('should reject when the mapError callback throws', async () => {
+      const resultFlow = ResultFlow.from<number, string>(N.err('error')).mapError(() => {
+        throw new Error('mapError failed');
+      });
+
+      await rejects(() => resultFlow.run(), /mapError failed/);
     });
   });
 
@@ -576,6 +652,28 @@ describe('ResultFlow', () => {
       deepEqual(mockFn.mock.calls[0]?.arguments, [{context}]);
       deepEqual(value, 20);
     });
+
+    it('should pass context to a ResultFlow returned by the callback', async () => {
+      const innerMock = mock.fn();
+      const resultFlow = ResultFlow.from<number, never, Context>(N.ok(10))
+        .chain((n) => ResultFlow.of<number, never, Context>(async (_, extras) => {
+          innerMock(extras);
+          return n + 10;
+        }));
+
+      const result = await resultFlow.run({ context });
+
+      deepEqual(result._unsafeUnwrap(), 20);
+      deepEqual(innerMock.mock.calls[0]?.arguments, [{ context }]);
+    });
+
+    it('should reject when the chain callback throws', async () => {
+      const resultFlow = ResultFlow.from<number, never>(N.ok(10)).chain(() => {
+        throw new Error('chain failed');
+      });
+
+      await rejects(() => resultFlow.run(), /chain failed/);
+    });
   });
 
   describe('ifSuccess', () => {
@@ -625,6 +723,14 @@ describe('ResultFlow', () => {
       deepEqual(effect.mock.calls[0]?.arguments, [10, { context }]);
       deepEqual(value, 10);
     });
+
+    it('should reject when the effect throws', async () => {
+      const resultFlow = ResultFlow.from<number, never>(N.ok(10)).ifSuccess(() => {
+        throw new Error('ifSuccess failed');
+      });
+
+      await rejects(() => resultFlow.run(), /ifSuccess failed/);
+    });
   });
 
   describe('ifFailure', () => {
@@ -672,6 +778,14 @@ describe('ResultFlow', () => {
       await resultFlow.ifFailure(effect).run({ context });
 
       deepEqual(effect.mock.calls[0]?.arguments, ['error', { context }]);
+    });
+
+    it('should reject when the effect throws', async () => {
+      const resultFlow = ResultFlow.from<number, string>(N.err('error')).ifFailure(() => {
+        throw new Error('ifFailure failed');
+      });
+
+      await rejects(() => resultFlow.run(), /ifFailure failed/);
     });
   });
 
@@ -780,6 +894,41 @@ describe('ResultFlow', () => {
 
       deepEqual(mockFn.mock.calls[0]?.arguments, [{context}]);
       deepEqual(value, 20);
+    });
+
+    it('should preserve failures returned by the alternative', async () => {
+      deepEqual(
+        await ResultFlow.from<number, string>(N.err('error'))
+          .orElse(() => ResultFlow.from<number, 'recovery-error'>(N.err('recovery-error')))
+          .run(),
+        N.err('recovery-error'),
+      );
+      deepEqual(
+        await ResultFlow.from<number, string>(N.err('error'))
+          .orElse(() => Promise.resolve(N.err<number, 'recovery-error'>('recovery-error')))
+          .run(),
+        N.err('recovery-error'),
+      );
+      deepEqual(
+        await ResultFlow.from<number, string>(N.err('error'))
+          .orElse(() => N.err<number, 'recovery-error'>('recovery-error'))
+          .run(),
+        N.err('recovery-error'),
+      );
+      deepEqual(
+        await ResultFlow.from<number, string>(N.err('error'))
+          .orElse(() => N.errAsync<number, 'recovery-error'>('recovery-error'))
+          .run(),
+        N.err('recovery-error'),
+      );
+    });
+
+    it('should reject when the alternative throws', async () => {
+      const resultFlow = ResultFlow.from<number, string>(N.err('error')).orElse(() => {
+        throw new Error('orElse failed');
+      });
+
+      await rejects(() => resultFlow.run(), /orElse failed/);
     });
   });
 
