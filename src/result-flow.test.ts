@@ -490,14 +490,15 @@ describe('ResultFlow', () => {
 
     it('should access the context', async () => {
       const mockFn = mock.fn();
-      const r = ResultFlow
+      const r = await ResultFlow
       .from<string, string, Context>(N.err('error'))
       .mapError((error, extras: {context: Context}) => {
         mockFn(extras);
         return `${error} - transformed`;
-      });
+      })
+      .run({ context });
       deepEqual(mockFn.mock.calls[0]?.arguments, [{context}]);
-      deepEqual(await r.run({context}), N.err('error - transformed'));
+      deepEqual(r, N.err('error - transformed'));
     });
   });
 
@@ -586,7 +587,7 @@ describe('ResultFlow', () => {
       const result = await resultFlow.ifSuccess(effect).run();
       const value = result._unsafeUnwrap();
 
-      deepEqual(effect.mock.calls[0]?.arguments, [10]);
+      deepEqual(effect.mock.calls[0]?.arguments, [10, { context: {} }]);
       deepEqual(value, 10);
     });
 
@@ -637,7 +638,7 @@ describe('ResultFlow', () => {
       const value = result._unsafeUnwrapErr();
 
       deepEqual(value, 'error');
-      deepEqual(effect.mock.calls[0]?.arguments, ['error']);
+      deepEqual(effect.mock.calls[0]?.arguments, ['error', { context: {} }]);
     });
 
     it('should not execute the effect when it is a success', async () => {
