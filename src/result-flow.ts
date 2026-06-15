@@ -1,7 +1,7 @@
 import * as N from 'neverthrow';
 import type { Result, ResultAsync, Err } from 'neverthrow';
-import * as PromiseHelpers from './promise-helpers';
-import { calculateDelay, wait, type DelayStrategy } from './delay';
+import * as PromiseHelpers from './promise-helpers.js';
+import { calculateDelay, wait, type DelayStrategy } from './delay.js';
 
 export interface ResultFlowHelpers<E> {
   tryTo<A>(result: Result<A, E> | Promise<Result<A, E>> | ResultAsync<A, E>): Promise<A>;

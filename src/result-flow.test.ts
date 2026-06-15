@@ -3,7 +3,7 @@ import { deepEqual, fail, rejects } from 'node:assert';
 import { describe, it, mock, type Mock, type TestContext } from 'node:test';
 import * as N from 'neverthrow';
 import { Result } from 'neverthrow';
-import { ResultFlow } from './result-flow';
+import { ResultFlow } from './result-flow.js';
 
 type Row = {
   id: number;

@@ -1,6 +1,6 @@
 import { strictEqual } from 'node:assert';
 import { describe, it } from 'node:test';
-import { calculateExponentialDelay, calculateDelay, type DelayStrategy } from './delay';
+import { calculateExponentialDelay, calculateDelay, type DelayStrategy } from './delay.js';
 
 describe('calculateDelay', () => {
   it('should return 0 for immediate strategy', () => {
