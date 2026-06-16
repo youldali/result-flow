@@ -1366,5 +1366,93 @@ describe('ResultFlow', () => {
 
       abortController.abort();
     });
+
+    it('should pass context to the periodic flow and recovery action', async (context) => {
+      context.mock.timers.enable({ apis: ['setInterval'] });
+      const flowMock = mock.fn();
+      const recoveryMock = mock.fn(() => N.err('recovery-error'));
+      const onInterruption = mock.fn();
+      const resultFlow = ResultFlow.of<never, string, Context>(async ({ fail }, extras) => {
+        flowMock(extras);
+        return fail(error);
+      });
+
+      resultFlow.runPeriodically({
+        interval: defaultInterval,
+        context: { correlationId: 'test-correlation-id', userId: 'test-user-id' },
+        recoveryAction: recoveryMock,
+        onInterruption,
+      });
+
+      await advanceToNextTick(context);
+      await advanceToNextTick(context);
+
+      deepEqual(flowMock.mock.calls[0]?.arguments, [{ context: {
+        correlationId: 'test-correlation-id',
+        userId: 'test-user-id',
+      } }]);
+      deepEqual(recoveryMock.mock.calls[0]?.arguments, [
+        error,
+        {
+          context: {
+            correlationId: 'test-correlation-id',
+            userId: 'test-user-id',
+          },
+        },
+      ]);
+      deepEqual(onInterruption.mock.callCount(), 1);
+    });
+
+    it('should let the interval callback reject when the periodic flow throws', async (context) => {
+      let intervalCallback: (() => Promise<void>) | undefined;
+      context.mock.method(globalThis, 'setInterval', (callback: () => void) => {
+        intervalCallback = callback as () => Promise<void>;
+        return 0 as unknown as NodeJS.Timeout;
+      });
+      const thrownError = new Error('periodic flow failed');
+      const mockOnInterruption = mock.fn();
+      const resultFlow = ResultFlow.of<never, Error>(async () => {
+        throw thrownError;
+      });
+
+      resultFlow.runPeriodically({
+        interval: defaultInterval,
+        onInterruption: mockOnInterruption,
+      });
+
+      if (!intervalCallback) {
+        fail('Expected runPeriodically to register an interval callback');
+      }
+
+      await rejects(intervalCallback, /periodic flow failed/);
+      deepEqual(mockOnInterruption.mock.callCount(), 0);
+    });
+
+    it('should let the interval callback reject when the recovery action rejects', async (context) => {
+      let intervalCallback: (() => Promise<void>) | undefined;
+      context.mock.method(globalThis, 'setInterval', (callback: () => void) => {
+        intervalCallback = callback as () => Promise<void>;
+        return 0 as unknown as NodeJS.Timeout;
+      });
+      const recoveryError = new Error('recovery action failed');
+      const mockOnInterruption = mock.fn();
+      const mockRecoveryAction = mock.fn(async () => {
+        throw recoveryError;
+      });
+
+      ResultFlow.from<never, string>(N.err(error)).runPeriodically({
+        interval: defaultInterval,
+        recoveryAction: mockRecoveryAction,
+        onInterruption: mockOnInterruption,
+      });
+
+      if (!intervalCallback) {
+        fail('Expected runPeriodically to register an interval callback');
+      }
+
+      await rejects(intervalCallback, /recovery action failed/);
+      deepEqual(mockRecoveryAction.mock.callCount(), 1);
+      deepEqual(mockOnInterruption.mock.callCount(), 0);
+    });
   });
 });

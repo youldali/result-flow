@@ -33,6 +33,16 @@ describe('calculateDelay', () => {
     strictEqual(calculateDelay(strategy, 4), 500); // capped at maxDelay
     strictEqual(calculateDelay(strategy, 5), 500); // capped at maxDelay
   });
+
+  it('should support 0 as a maxDelay', () => {
+    const strategy: DelayStrategy = {
+      type: "exponentialBackoff",
+      baseDelayMs: 100,
+      maxDelayMs: 0,
+    };
+    strictEqual(calculateDelay(strategy, 1), 0);
+    strictEqual(calculateDelay(strategy, 2), 0);
+  });
 });
 
 describe('calculateExponentialDelay', () => {
@@ -49,5 +59,10 @@ describe('calculateExponentialDelay', () => {
     strictEqual(calculateExponentialDelay(3, 100, 500), 400);
     strictEqual(calculateExponentialDelay(4, 100, 500), 500); // capped at maxDelay
     strictEqual(calculateExponentialDelay(5, 100, 500), 500); // capped at maxDelay
+  });
+
+  it('should support 0 as a maxDelay', () => {
+    strictEqual(calculateExponentialDelay(1, 100, 0), 0);
+    strictEqual(calculateExponentialDelay(2, 100, 0), 0);
   });
 });

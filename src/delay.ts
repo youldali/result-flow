@@ -24,7 +24,7 @@ export function calculateExponentialDelay(
   maxDelay?: number
 ): number {
   const delay = baseDelay * 2 ** (attempt - 1)
-  return maxDelay ? Math.min(delay, maxDelay) : delay
+  return maxDelay !== undefined ? Math.min(delay, maxDelay) : delay
 }
 
 export function wait(ms: number): Promise<void> {
