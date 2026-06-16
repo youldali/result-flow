@@ -1185,6 +1185,225 @@ describe('ResultFlow', () => {
     });
   });
 
+  describe('timeout', () => {
+    it('should return the original success when the flow completes before the timeout', async (context) => {
+      context.mock.method(AbortSignal, 'timeout', () => new AbortController().signal);
+
+      const result = await ResultFlow.from(N.ok(10))
+        .timeout({
+          ms: 100,
+          onTimeout: () => 'timeout' as const,
+        })
+        .run();
+
+      deepEqual(result._unsafeUnwrap(), 10);
+    });
+
+    it('should return the onTimeout error when the timeout wins', async (context) => {
+      const timeoutController = new AbortController();
+      context.mock.method(AbortSignal, 'timeout', () => timeoutController.signal);
+      const onTimeout = mock.fn(() => 'timeout' as const);
+      const resultPromise = ResultFlow.of<never, never>(async () => {
+        return new Promise<never>(() => undefined);
+      })
+        .timeout({
+          ms: 100,
+          onTimeout,
+        })
+        .run();
+
+      await sleep(0);
+      timeoutController.abort();
+
+      const result = await resultPromise;
+      deepEqual(result._unsafeUnwrapErr(), 'timeout');
+      deepEqual(onTimeout.mock.callCount(), 1);
+    });
+
+    it('should pass context and the composed abortSignal to onTimeout', async (testContext) => {
+      const timeoutController = new AbortController();
+      const parentController = new AbortController();
+      let composedSignal: AbortSignal | undefined;
+      const originalAbortSignalAny = AbortSignal.any;
+      testContext.mock.method(AbortSignal, 'timeout', () => timeoutController.signal);
+      testContext.mock.method(AbortSignal, 'any', (signals: AbortSignal[]) => {
+        composedSignal = originalAbortSignalAny(signals);
+        return composedSignal;
+      });
+      const onTimeout = mock.fn(() => 'timeout' as const);
+      const resultPromise = ResultFlow.of<never, never, Context>(async () => {
+        return new Promise<never>(() => undefined);
+      })
+        .timeout({
+          ms: 100,
+          onTimeout,
+        })
+        .run({ context, abortSignal: parentController.signal });
+
+      await sleep(0);
+      timeoutController.abort();
+      await resultPromise;
+
+      deepEqual(onTimeout.mock.calls[0]?.arguments, [{ context, abortSignal: composedSignal }]);
+    });
+
+    it('should pass a signal that flow bodies can observe aborting on timeout', async (context) => {
+      const timeoutController = new AbortController();
+      context.mock.method(AbortSignal, 'timeout', () => timeoutController.signal);
+      const abortObserved = mock.fn();
+      const resultPromise = ResultFlow.of<never, never>(async (_helpers, { abortSignal }) => {
+        abortSignal?.addEventListener('abort', abortObserved, { once: true });
+        return new Promise<never>(() => undefined);
+      })
+        .timeout({
+          ms: 100,
+          onTimeout: () => 'timeout' as const,
+        })
+        .run();
+
+      await sleep(0);
+      timeoutController.abort();
+
+      const result = await resultPromise;
+      deepEqual(result._unsafeUnwrapErr(), 'timeout');
+      deepEqual(abortObserved.mock.callCount(), 1);
+    });
+
+    it('should compose an existing upstream abortSignal into the signal passed to the flow', async (context) => {
+      const timeoutController = new AbortController();
+      const parentController = new AbortController();
+      context.mock.method(AbortSignal, 'timeout', () => timeoutController.signal);
+      const onTimeout = mock.fn(() => 'timeout' as const);
+      const resultPromise = ResultFlow.of<'aborted', never>(async (_helpers, { abortSignal }) => {
+        return new Promise<'aborted'>((resolve) => {
+          abortSignal?.addEventListener('abort', () => resolve('aborted'), { once: true });
+        });
+      })
+        .timeout({
+          ms: 100,
+          onTimeout,
+        })
+        .run({ abortSignal: parentController.signal });
+
+      await sleep(0);
+      parentController.abort();
+
+      const result = await resultPromise;
+      deepEqual(result._unsafeUnwrap(), 'aborted');
+      deepEqual(onTimeout.mock.callCount(), 0);
+    });
+
+    it('should not call onTimeout when an upstream signal aborts first', async (context) => {
+      const timeoutController = new AbortController();
+      const parentController = new AbortController();
+      const upstreamAbortError = new Error('upstream aborted');
+      context.mock.method(AbortSignal, 'timeout', () => timeoutController.signal);
+      const onTimeout = mock.fn(() => 'timeout' as const);
+      const resultFlow = ResultFlow.of<never, never>(async (_helpers, { abortSignal }) => {
+        return new Promise<never>((_resolve, reject) => {
+          abortSignal?.addEventListener('abort', () => reject(upstreamAbortError), { once: true });
+        });
+      })
+        .timeout({
+          ms: 100,
+          onTimeout,
+        });
+      const resultPromise = resultFlow.run({ abortSignal: parentController.signal });
+
+      await sleep(0);
+      parentController.abort();
+
+      await rejects(() => resultPromise, /upstream aborted/);
+      deepEqual(onTimeout.mock.callCount(), 0);
+    });
+
+    it('should call the onTimeout callback associated with the timeout signal that emitted', async (context) => {
+      const outerTimeoutController = new AbortController();
+      const innerTimeoutController = new AbortController();
+      let timeoutCallCount = 0;
+      context.mock.method(AbortSignal, 'timeout', () => {
+        timeoutCallCount += 1;
+        return timeoutCallCount === 1
+          ? outerTimeoutController.signal
+          : innerTimeoutController.signal;
+      });
+      const innerOnTimeout = mock.fn(() => 'inner-timeout' as const);
+      const outerOnTimeout = mock.fn(() => 'outer-timeout' as const);
+      const resultPromise = ResultFlow.of<never, never>(async () => {
+        return new Promise<never>(() => undefined);
+      })
+        .timeout({
+          ms: 100,
+          onTimeout: innerOnTimeout,
+        })
+        .timeout({
+          ms: 200,
+          onTimeout: outerOnTimeout,
+        })
+        .run();
+
+      await sleep(0);
+      innerTimeoutController.abort();
+
+      const result = await resultPromise;
+      deepEqual(result._unsafeUnwrapErr(), 'inner-timeout');
+      deepEqual(innerOnTimeout.mock.callCount(), 1);
+      deepEqual(outerOnTimeout.mock.callCount(), 0);
+    });
+
+    it('should timeout each retry attempt when timeout is applied before retryPolicy', async (context) => {
+      const firstTimeoutController = new AbortController();
+      const secondTimeoutController = new AbortController();
+      let timeoutCallCount = 0;
+      context.mock.method(AbortSignal, 'timeout', () => {
+        timeoutCallCount += 1;
+        return timeoutCallCount === 1
+          ? firstTimeoutController.signal
+          : secondTimeoutController.signal;
+      });
+      const action = mock.fn(() => new Promise<Result<never, never>>(() => undefined));
+      const resultPromise = ResultFlow.from(action)
+        .timeout({
+          ms: 100,
+          onTimeout: () => 'timeout' as const,
+        })
+        .retryPolicy({ maxRetries: 1 })
+        .run();
+
+      await sleep(0);
+      firstTimeoutController.abort();
+      await sleep(0);
+      secondTimeoutController.abort();
+
+      const result = await resultPromise;
+      deepEqual(result._unsafeUnwrapErr(), 'timeout');
+      deepEqual(action.mock.callCount(), 2);
+    });
+
+    it('should timeout the whole retry sequence when timeout is applied after retryPolicy', async (context) => {
+      const timeoutController = new AbortController();
+      context.mock.method(AbortSignal, 'timeout', () => timeoutController.signal);
+      const action = mock.fn(() => N.err('failure' as const));
+      const resultPromise = ResultFlow.from(action)
+        .retryPolicy({
+          maxRetries: 1,
+          retryStrategy: { type: 'exponentialBackoff', baseDelayMs: 1000 },
+        })
+        .timeout({
+          ms: 100,
+          onTimeout: () => 'timeout' as const,
+        })
+        .run();
+
+      await sleep(0);
+      timeoutController.abort();
+
+      const result = await resultPromise;
+      deepEqual(result._unsafeUnwrapErr(), 'timeout');
+      deepEqual(action.mock.callCount(), 1);
+    });
+  });
+
   describe('runPeriodically', () => {
     const error = 'error';
     const defaultInterval = 10;

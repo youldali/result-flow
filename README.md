@@ -21,6 +21,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
   - [Fallback To Another Flow](#fallback-to-another-flow)
   - [Use Generator Syntax](#use-generator-syntax)
   - [Retry Transient Failures](#retry-transient-failures)
+  - [Fail On Timeout](#fail-on-timeout)
   - [Run A Flow Periodically](#run-a-flow-periodically)
 - [API Reference](#api-reference)
   - [`ResultFlow.of`](#resultflowof)
@@ -36,6 +37,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
   - [`ifSuccess`](#ifsuccess)
   - [`ifFailure`](#iffailure)
   - [`retryPolicy`](#retrypolicy)
+  - [`timeout`](#timeout)
   - [`runPeriodically`](#runperiodically)
 - [Helper Types](#helper-types)
 - [Development](#development)
@@ -354,6 +356,41 @@ const result = await ResultFlow
 
 `maxRetries` is the number of retries after the first attempt. With `maxRetries: 3`, the operation can run up to 4 times.
 
+### Fail On Timeout
+
+Use `timeout` when a flow should become a typed failure if it takes too long.
+
+```ts
+const result = await flow
+  .timeout({
+    ms: 500,
+    onTimeout: () => ({ reason: 'timeout' as const }),
+  })
+  .run();
+```
+
+The flow receives a composed `extras.abortSignal`. Pass this signal to long-running operations such as `fetch` or `fs` calls so they can stop when the timeout emits.
+
+```ts
+const flow = ResultFlow.of<Response, { reason: 'timeout' }>(async ({ tryTo }, { abortSignal }) => {
+  return tryTo(fetch(url, { signal: abortSignal }).then((response) => N.ok(response)));
+});
+```
+
+The timeout wrapper can return `Err` as soon as the timeout wins, but it cannot force arbitrary work to stop unless that work uses the signal.
+
+Order matters when combining `timeout` with `retryPolicy`:
+
+```ts
+flow.timeout({ ms: 500, onTimeout }).retryPolicy({ maxRetries: 2 });
+// Each retry attempt gets its own 500ms timeout.
+
+flow.retryPolicy({ maxRetries: 2 }).timeout({ ms: 500, onTimeout });
+// The whole retry sequence shares one 500ms timeout.
+```
+
+Timeouts are returned as typed `Err` values. External aborts are not mapped by `timeout`; they are left to the underlying operation's normal abort behavior.
+
 ### Run A Flow Periodically
 
 Use `runPeriodically` for polling, health checks, or scheduled maintenance loops.
@@ -541,7 +578,7 @@ Executes the flow and returns a `Promise<Result<A, E>>`.
 
 ```ts
 flow.run(): Promise<N.Result<A, E>>
-flow.run({ context }: { context: C }): Promise<N.Result<A, E>>
+flow.run({ context, abortSignal }: { context: C; abortSignal?: AbortSignal }): Promise<N.Result<A, E>>
 ```
 
 The context argument is only needed when the flow declares a context type.
@@ -766,6 +803,35 @@ const result = await ResultFlow
 
 Only the flow before `retryPolicy` is retried. Steps appended after `retryPolicy` run once after the retry policy completes.
 
+### `timeout`
+
+Turns the previous flow into a typed failure when it takes longer than `ms`.
+
+```ts
+flow.timeout<E2>(params: {
+  ms: number;
+  onTimeout: (extras: { context: C; abortSignal?: AbortSignal }) => E2;
+}): ResultFlow<A, E | E2, C>
+```
+
+Example:
+
+```ts
+const result = await ResultFlow
+  .from(() => callRemoteService())
+  .timeout({
+    ms: 500,
+    onTimeout: () => ({ reason: 'timeout' as const }),
+  })
+  .run();
+```
+
+The timeout signal is composed with any existing `extras.abortSignal` using `AbortSignal.any`, and the composed signal is passed down to the wrapped flow. Pass `extras.abortSignal` to long-running operations so they can stop when the timeout emits; otherwise `timeout` can return early but the underlying work may continue in the background.
+
+If this timeout emits first, `onTimeout` builds the returned `Err`. If another signal aborts first, `onTimeout` is not called.
+
+Composition order with `retryPolicy` is significant: `flow.timeout(...).retryPolicy(...)` gives each retry attempt its own timeout, while `flow.retryPolicy(...).timeout(...)` applies one timeout to the whole retry sequence.
+
 ### `runPeriodically`
 
 Runs the flow repeatedly with `setInterval`.
@@ -833,8 +899,11 @@ Several methods receive `extras`:
 ```ts
 type Extras<C> = {
   context: C;
+  abortSignal?: AbortSignal;
 };
 ```
+
+`abortSignal` is a single composed signal. It may include a timeout signal, a caller-provided signal, or both.
 
 ## Development
 

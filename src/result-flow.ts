@@ -27,7 +27,9 @@ type DefaultContext = Record<never, never>;
 type BaseContext = Record<string, any>;
 type SubContext<C> = { [K in keyof C]?: C[K] };
 type PolymorphicResult<A, E, C extends BaseContext = DefaultContext> = ResultFlow<A, E, C> | Promise<Result<A, E>> | Result<A, E> | ResultAsync<A, E>;
-type Extras<C extends BaseContext> = { context: C; };
+type Extras<C extends BaseContext> = { context: C; abortSignal?: AbortSignal; };
+type RunParams<C extends BaseContext> =
+  { abortSignal?: AbortSignal } & (keyof C extends never ? { context?: C } : { context: C });
 
 export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
   private constructor(private runPromise: (helpers: ResultFlowHelpers<E>, extras: Extras<C>) => Promise<A>) {}
@@ -88,13 +90,14 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
 
   async run(
     ...args: keyof C extends never
-      ? [] | [{ context: C }]
-      : [{ context: C }]
+      ? [] | [RunParams<C>]
+      : [RunParams<C>]
   ): Promise<Result<A, E>> {
-    const [{ context } = { context: {} as C }] = args;
+    const [{ context = {} as C, abortSignal } = {} as RunParams<C>] = args;
+    const extras: Extras<C> = abortSignal ? { context, abortSignal } : { context };
 
     try {
-      return N.ok(await this.runPromise(this.helpers, {context}));
+      return N.ok(await this.runPromise(this.helpers, extras));
     } catch (e: unknown) {
       if (e instanceof ResultInterruption) {
         return e.error;
@@ -121,7 +124,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
   }
 
   chain<A2, E2, C2 extends BaseContext = DefaultContext>(
-    f: (value: A, extras: { context: C & C2 }) => PolymorphicResult<A2, E2, C2>,
+    f: (value: A, extras: Extras<C & C2>) => PolymorphicResult<A2, E2, C2>,
   ): ResultFlow<A2, E | E2, C & C2> {
     return ResultFlow.of<A2, E | E2, C & C2>(async ({ tryTo }, extras) => {
       const result = await tryTo(this.run(extras));
@@ -150,7 +153,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
   }
 
   orElse<E2, C2 extends BaseContext = DefaultContext>(
-    alternative: (error: E, extras: { context: C & C2 }) => PolymorphicResult<A, E2, C2>,
+    alternative: (error: E, extras: Extras<C & C2>) => PolymorphicResult<A, E2, C2>,
   ): ResultFlow<A, E2, C & C2> {
     return ResultFlow.of<A, E2, C & C2>(async ({ tryTo }, extras) => {
       const result = await this.run(extras);
@@ -200,6 +203,43 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     });
   }
 
+  timeout<E2>({
+    ms,
+    onTimeout,
+  }: {
+    ms: number;
+    onTimeout: (extras: Extras<C>) => E2;
+  }): ResultFlow<A, E | E2, C> {
+    return ResultFlow.of<A, E | E2, C>(async ({ fail, tryTo }, extras) => {
+      const timeoutSignal = AbortSignal.timeout(ms);
+      const timeoutSentinel = Symbol('ResultFlow.timeout');
+      const abortSignal = extras.abortSignal
+        ? AbortSignal.any([extras.abortSignal, timeoutSignal])
+        : timeoutSignal;
+      const nextExtras: Extras<C> = { ...extras, abortSignal };
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutSignal.addEventListener(
+          'abort',
+          () => reject(timeoutSentinel),
+          { once: true },
+        );
+      });
+
+      try {
+        return await Promise.race([
+          tryTo(this.run(nextExtras)),
+          timeoutPromise,
+        ]);
+      } catch (error) {
+        if (error === timeoutSentinel) {
+          fail(onTimeout(nextExtras));
+        }
+
+        throw error;
+      }
+    });
+  }
+
   runPeriodically<E2>(
     params: {
       recoveryAction?: (error: E, extras: Extras<C>) => PolymorphicResult<unknown, E2>;
@@ -211,7 +251,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     } & (keyof C extends never ? { context?: C } : { context: C })
   ): void {
     const { recoveryAction, onInterruption, interval, context = {} as C, abortSignal } = params;
-    const extras: Extras<C> = { context };
+    const extras: Extras<C> = abortSignal ? { context, abortSignal } : { context };
 
     const intervalId = setInterval(async () => {
       const result = await this.run(extras);
