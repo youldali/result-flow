@@ -1050,6 +1050,21 @@ describe('ResultFlow', () => {
         deepEqual(setTimeoutMock.mock.calls[1]?.arguments[1], 200);
         deepEqual(result._unsafeUnwrap(), success);
       });
+
+      it('should reject when beforeRetry rejects', async () => {
+        const beforeRetryMock = mock.fn(async () => {
+          throw new Error('beforeRetry failed');
+        });
+        const mockAction = mock.fn(() => N.err(defaultError));
+        const resultFlow = ResultFlow.from(mockAction).retryPolicy({
+          maxRetries: 2,
+          beforeRetry: beforeRetryMock,
+        });
+
+        await rejects(() => resultFlow.run(), /beforeRetry failed/);
+        deepEqual(mockAction.mock.callCount(), 1);
+        deepEqual(beforeRetryMock.mock.callCount(), 1);
+      });
     });
 
     describe('Given a condition is passed', () => {
@@ -1096,6 +1111,24 @@ describe('ResultFlow', () => {
         deepEqual(mockAction.mock.callCount(), 1);
         deepEqual(beforeRetryMock.mock.callCount(), 0);
         deepEqual(result._unsafeUnwrap(), success);
+      });
+
+      it('should reject when the condition throws', async () => {
+        const condition = mock.fn(() => {
+          throw new Error('condition failed');
+        });
+        const beforeRetryMock = mock.fn();
+        const mockAction = mock.fn(() => N.err(defaultError));
+        const resultFlow = ResultFlow.from(mockAction).retryPolicy({
+          maxRetries: 2,
+          beforeRetry: beforeRetryMock,
+          condition,
+        });
+
+        await rejects(() => resultFlow.run(), /condition failed/);
+        deepEqual(mockAction.mock.callCount(), 1);
+        deepEqual(condition.mock.callCount(), 1);
+        deepEqual(beforeRetryMock.mock.callCount(), 0);
       });
     });
 
