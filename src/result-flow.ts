@@ -141,6 +141,10 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     });
   }
 
+  tap(f: (value: A, extras: Extras<C>) => void): ResultFlow<A, E, C> {
+    return this.ifSuccess(f);
+  }
+
   ifFailure(f: (value: E, extras: Extras<C>) => void): ResultFlow<A, E, C> {
     return ResultFlow.of<A, E, C>(async ({ fail }, extras) => {
       const result = await this.run(extras);
@@ -150,6 +154,10 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
       }
       return (result as N.Ok<A, E>).value;
     });
+  }
+
+  tapError(f: (value: E, extras: Extras<C>) => void): ResultFlow<A, E, C> {
+    return this.ifFailure(f);
   }
 
   orElse<E2, C2 extends BaseContext = DefaultContext>(

@@ -2,7 +2,7 @@
 
 `ResultFlow` is built on top of `neverthrow`. Both libraries are meant to be used together: `neverthrow` gives you typed `Result` and `ResultAsync` values, and `ResultFlow` adds a thunk-driven layer for composing work that should not execute until you call `run()`.
 
-That lazy execution model makes it possible to extend `neverthrow` workflows with behavior such as retries, periodic execution, and context passing. A flow stops on the first `Err`, returns that error from `run()`, and skips the remaining success path.
+That lazy execution model makes it possible to extend `neverthrow` workflows with behavior such as retries, periodic execution, timeouts, and context passing. A flow stops on the first `Err`, returns that error from `run()`, and skips the remaining success path.
 
 ## Table Of Contents
 
@@ -35,7 +35,9 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
   - [`chain`](#chain)
   - [`orElse`](#orelse)
   - [`ifSuccess`](#ifsuccess)
+  - [`tap`](#tap)
   - [`ifFailure`](#iffailure)
+  - [`tapError`](#taperror)
   - [`retryPolicy`](#retrypolicy)
   - [`timeout`](#timeout)
   - [`runPeriodically`](#runperiodically)
@@ -736,6 +738,27 @@ const result = await ResultFlow
 // Ok(10)
 ```
 
+### `tap`
+
+Alias for `ifSuccess`.
+
+```ts
+flow.tap(
+  effect: (value: A, extras: { context: C }) => void,
+): ResultFlow<A, E, C>
+```
+
+Example:
+
+```ts
+const result = await ResultFlow
+  .from(N.ok(10))
+  .tap((value) => console.log(`Success: ${value}`))
+  .run();
+
+// Ok(10)
+```
+
 ### `ifFailure`
 
 Runs a side effect when the flow fails, then keeps the original failure value.
@@ -752,6 +775,27 @@ Example:
 const result = await ResultFlow
   .from<number, string>(N.err('error'))
   .ifFailure((error) => console.error(`Failed: ${error}`))
+  .run();
+
+// Err('error')
+```
+
+### `tapError`
+
+Alias for `ifFailure`.
+
+```ts
+flow.tapError(
+  effect: (error: E, extras: { context: C }) => void,
+): ResultFlow<A, E, C>
+```
+
+Example:
+
+```ts
+const result = await ResultFlow
+  .from<number, string>(N.err('error'))
+  .tapError((error) => console.error(`Failed: ${error}`))
   .run();
 
 // Err('error')

@@ -733,6 +733,33 @@ describe('ResultFlow', () => {
     });
   });
 
+  describe('tap', () => {
+    it('should execute the effect when it is a success', async () => {
+      const resultFlow = ResultFlow.of<number, never, Context>(async () => {
+        return 10;
+      });
+      const effect = mock.fn();
+      const result = await resultFlow.tap(effect).run({ context });
+      const value = result._unsafeUnwrap();
+
+      deepEqual(effect.mock.calls[0]?.arguments, [10, { context }]);
+      deepEqual(value, 10);
+    });
+
+    it('should not execute the effect when it is a failure', async () => {
+      const resultFlow = ResultFlow.of<number, 'error'>(async ({ fail }) => {
+        fail('error');
+        return 10;
+      });
+      const effect = mock.fn();
+      const result = await resultFlow.tap(effect).run();
+      const value = result._unsafeUnwrapErr();
+
+      deepEqual(effect.mock.callCount(), 0);
+      deepEqual(value, 'error');
+    });
+  });
+
   describe('ifFailure', () => {
     it('should execute the effect when it is a failure', async () => {
       const resultFlow = ResultFlow.of<number, 'error'>(async ({ fail }) => {
@@ -786,6 +813,33 @@ describe('ResultFlow', () => {
       });
 
       await rejects(() => resultFlow.run(), /ifFailure failed/);
+    });
+  });
+
+  describe('tapError', () => {
+    it('should execute the effect when it is a failure', async () => {
+      const resultFlow = ResultFlow.of<number, 'error', Context>(async ({ fail }) => {
+        fail('error');
+        return 10;
+      });
+      const effect = mock.fn();
+      const result = await resultFlow.tapError(effect).run({ context });
+      const value = result._unsafeUnwrapErr();
+
+      deepEqual(value, 'error');
+      deepEqual(effect.mock.calls[0]?.arguments, ['error', { context }]);
+    });
+
+    it('should not execute the effect when it is a success', async () => {
+      const resultFlow = ResultFlow.of<number, never>(async () => {
+        return 10;
+      });
+      const effect = mock.fn();
+      const result = await resultFlow.tapError(effect).run();
+      const value = result._unsafeUnwrap();
+
+      deepEqual(value, 10);
+      deepEqual(effect.mock.callCount(), 0);
     });
   });
 
