@@ -450,6 +450,167 @@ describe('ResultFlow', () => {
     });
   });
 
+  describe('allSettled', () => {
+    it('should return Ok([]) for an empty array', async () => {
+      const result = await ResultFlow.allSettled([]).run();
+
+      deepEqual(result, N.ok([]));
+    });
+
+    it('should return Ok([a, b, c]) when all flows succeed', async () => {
+      const result = await ResultFlow.allSettled([
+        ResultFlow.from(N.ok('a')),
+        ResultFlow.from(N.ok('b')),
+        ResultFlow.from(N.ok('c')),
+      ]).run();
+
+      deepEqual(result, N.ok(['a', 'b', 'c']));
+    });
+
+    it('should return the first failure in array order', async () => {
+      const result = await ResultFlow.allSettled([
+        ResultFlow.from<number, 'first-error'>(N.err('first-error')),
+        ResultFlow.from<number, 'second-error'>(N.err('second-error')),
+      ]).run();
+
+      deepEqual(result, N.err('first-error'));
+    });
+
+    it('should stop executing flows after the first failure', async () => {
+      const first = mock.fn(() => N.ok(1));
+      const second = mock.fn(() => N.err('error' as const));
+      const third = mock.fn(() => N.ok(3));
+
+      const result = await ResultFlow.allSettled([
+        ResultFlow.from(first),
+        ResultFlow.from(second),
+        ResultFlow.from(third),
+      ]).run();
+
+      deepEqual(result, N.err('error'));
+      deepEqual(first.mock.callCount(), 1);
+      deepEqual(second.mock.callCount(), 1);
+      deepEqual(third.mock.callCount(), 0);
+    });
+
+    it('should not execute any flow before .run() is called', () => {
+      const first = mock.fn(() => N.ok(1));
+      const second = mock.fn(() => N.ok(2));
+
+      ResultFlow.allSettled([
+        ResultFlow.from(first),
+        ResultFlow.from(second),
+      ]);
+
+      deepEqual(first.mock.callCount(), 0);
+      deepEqual(second.mock.callCount(), 0);
+    });
+
+    it('should pass context to every input flow', async () => {
+      const first = mock.fn();
+      const second = mock.fn();
+
+      const result = await ResultFlow.allSettled([
+        ResultFlow.of<number, never, Context>(async (_helpers, extras) => {
+          first(extras);
+          return 1;
+        }),
+        ResultFlow.of<number, never, Context>(async (_helpers, extras) => {
+          second(extras);
+          return 2;
+        }),
+      ]).run({ context });
+
+      deepEqual(result, N.ok([1, 2]));
+      deepEqual(first.mock.calls[0]?.arguments, [{ context }]);
+      deepEqual(second.mock.calls[0]?.arguments, [{ context }]);
+    });
+
+    it('should preserve tuple value types for readonly tuple input', async () => {
+      const flow = ResultFlow.allSettled([
+        ResultFlow.from<1, 'first-error'>(N.ok(1 as const)),
+        ResultFlow.from<'two', 'second-error'>(N.ok('two' as const)),
+        ResultFlow.from<true, 'third-error'>(N.ok(true as const)),
+      ] as const);
+      const typedFlow: ResultFlow<
+        readonly [1, 'two', true],
+        'first-error' | 'second-error' | 'third-error'
+      > = flow;
+
+      const result = await typedFlow.run();
+
+      deepEqual(result, N.ok([1, 'two', true]));
+    });
+
+    it('should union error types from all flows', async () => {
+      const flow = ResultFlow.allSettled([
+        ResultFlow.from<number, { reason: 'first' }>(N.ok(1)),
+        ResultFlow.from<string, { reason: 'second' }>(N.err({ reason: 'second' })),
+      ] as const);
+      const typedFlow: ResultFlow<
+        readonly [number, string],
+        { reason: 'first' } | { reason: 'second' }
+      > = flow;
+
+      const result = await typedFlow.run();
+
+      deepEqual(result, N.err({ reason: 'second' }));
+    });
+
+    it('should require combined context when input flows have context', async () => {
+      type FirstContext = { correlationId: string };
+      type SecondContext = { userId: string };
+      const flow = ResultFlow.allSettled([
+        ResultFlow.of<number, never, FirstContext>(async (_helpers, { context }) => context.correlationId.length),
+        ResultFlow.of<string, never, SecondContext>(async (_helpers, { context }) => context.userId),
+      ] as const);
+      const typedFlow: ResultFlow<
+        readonly [number, string],
+        never,
+        FirstContext & SecondContext
+      > = flow;
+
+      const result = await typedFlow.run({
+        context: { correlationId: 'test-correlation-id', userId: 'test-user-id' },
+      });
+
+      deepEqual(result, N.ok([19, 'test-user-id']));
+    });
+
+    it('should reject when an input flow throws or rejects', async () => {
+      await rejects(
+        () => ResultFlow.allSettled([
+          ResultFlow.from(N.ok(1)),
+          ResultFlow.of<number, never>(async () => {
+            throw new Error('flow threw');
+          }),
+        ]).run(),
+        /flow threw/,
+      );
+
+      await rejects(
+        () => ResultFlow.allSettled([
+          ResultFlow.from(N.ok(1)),
+          ResultFlow.from<number, never>(Promise.reject(new Error('flow rejected'))),
+        ]).run(),
+        /flow rejected/,
+      );
+    });
+
+    it('should be immutable', async () => {
+      const first = ResultFlow.from(N.ok(1));
+      const second = ResultFlow.from(N.ok(2));
+      const flows = Object.freeze([first, second] as const);
+      const settled = ResultFlow.allSettled(flows);
+
+      deepEqual(flows, [first, second]);
+      deepEqual(await first.run(), N.ok(1));
+      deepEqual(await second.run(), N.ok(2));
+      deepEqual(await settled.run(), N.ok([1, 2]));
+      deepEqual(flows, [first, second]);
+    });
+  });
+
   describe('isResultFlow', () => {
     it('should return `false` when passed undefined', async () => {
       const isResultFlow = ResultFlow.isResultFlow(undefined);

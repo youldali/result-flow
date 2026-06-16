@@ -21,6 +21,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
   - [Handle One Failure Manually](#handle-one-failure-manually)
   - [Fallback To Another Flow](#fallback-to-another-flow)
   - [Use Generator Syntax](#use-generator-syntax)
+  - [Combine Independent Flows](#combine-independent-flows)
   - [Retry Transient Failures](#retry-transient-failures)
   - [Fail On Timeout](#fail-on-timeout)
   - [Run A Flow Periodically](#run-a-flow-periodically)
@@ -30,6 +31,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
   - [`ResultFlow.lift`](#resultflowlift)
   - [`ResultFlow.isResultFlow`](#resultflowisresultflow)
   - [`ResultFlow.gen`](#resultflowgen)
+  - [`ResultFlow.allSettled`](#resultflowallsettled)
   - [`run`](#run)
   - [`map`](#map)
   - [`ensure`](#ensure)
@@ -359,6 +361,36 @@ const result = await ResultFlow.gen<User, UserError>(async function* () {
 
 You can yield `ResultFlow`, `Result`, or `ResultAsync` values. The flow unwraps `Ok` values and stops on the first `Err`.
 
+### Combine Independent Flows
+
+Use `ResultFlow.allSettled` when you have several flows that should run in order and collect their success values.
+
+```ts
+const result = await ResultFlow
+  .allSettled([
+    ResultFlow.from(N.ok('user-1')),
+    ResultFlow.from(N.ok(42)),
+    ResultFlow.from(N.ok(true)),
+  ] as const)
+  .run();
+
+// Ok(['user-1', 42, true])
+```
+
+The combined flow is lazy. None of the input flows runs until the returned flow is run. When it runs, each input flow receives the same context, execution stops on the first `Err`, and thrown exceptions or rejected promises still reject `run()`.
+
+```ts
+const result = await ResultFlow
+  .allSettled([
+    ResultFlow.from(N.ok('cached-user')),
+    ResultFlow.from<number, 'quota-exceeded'>(N.err('quota-exceeded')),
+    ResultFlow.from(N.ok('not-run')),
+  ])
+  .run();
+
+// Err('quota-exceeded')
+```
+
 ### Retry Transient Failures
 
 Use `retryPolicy` around the part of the flow that should be retried.
@@ -605,6 +637,43 @@ const flow = ResultFlow.gen<number, never, Context>(async function* ({ context }
 
 await flow.run({ context: { multiplier: 3 } }); // Ok(30)
 ```
+
+### `ResultFlow.allSettled`
+
+Combines multiple `ResultFlow`s into one lazy flow. The returned flow runs each input flow in array order, returns `Ok` with the collected success values when all flows succeed, and returns the first `Err` when any flow fails.
+
+```ts
+ResultFlow.allSettled(flows): ResultFlow<Values, Errors, Context>
+```
+
+Example:
+
+```ts
+const flow = ResultFlow.allSettled([
+  ResultFlow.from(N.ok(10)),
+  ResultFlow.from(N.ok('ready')),
+] as const);
+
+await flow.run(); // Ok([10, 'ready'])
+```
+
+For readonly tuple inputs, the success type is preserved as a tuple. Error types are unioned, and context types are combined so the returned flow requires the context needed by every input flow.
+
+```ts
+type Context = { requestId: string };
+
+const flow = ResultFlow.allSettled([
+  ResultFlow.of<number, 'missing', Context>(async (_helpers, { context }) => {
+    return context.requestId.length;
+  }),
+  ResultFlow.from<boolean, 'invalid'>(N.ok(true)),
+] as const);
+
+// ResultFlow<readonly [number, boolean], 'missing' | 'invalid', Context>
+await flow.run({ context: { requestId: 'req-123' } });
+```
+
+An empty input array succeeds with `Ok([])`.
 
 ### `run`
 

@@ -2,6 +2,7 @@ import * as N from 'neverthrow';
 import type { Result, ResultAsync, Err } from 'neverthrow';
 import * as PromiseHelpers from './promise-helpers.js';
 import { calculateDelay, wait, type DelayStrategy } from './delay.js';
+import type { IsAny, UnionToIntersection } from './typeHelper.js';
 
 export interface ResultFlowHelpers<E> {
   tryTo<A>(result: Result<A, E> | Promise<Result<A, E>> | ResultAsync<A, E>): Promise<A>;
@@ -30,6 +31,21 @@ type PolymorphicResult<A, E, C extends BaseContext = DefaultContext> = ResultFlo
 type Extras<C extends BaseContext> = { context: C; abortSignal?: AbortSignal; };
 type RunParams<C extends BaseContext> =
   { abortSignal?: AbortSignal } & (keyof C extends never ? { context?: C } : { context: C });
+type FlowSuccess<F> = F extends ResultFlow<infer A, any, any> ? A : never;
+type FlowError<F> = F extends ResultFlow<any, infer E, any> ? E : never;
+type FlowContext<F> = F extends ResultFlow<any, any, infer C> ? C : never;
+type NormalizeContext<C> = IsAny<C> extends true
+  ? DefaultContext
+  : C extends BaseContext
+    ? C
+    : DefaultContext;
+type AllSettledValues<Flows extends readonly ResultFlow<any, any, any>[]> = {
+  [K in keyof Flows]: FlowSuccess<Flows[K]>;
+};
+type AllSettledError<Flows extends readonly ResultFlow<any, any, any>[]> = FlowError<Flows[number]>;
+type AllSettledContext<Flows extends readonly ResultFlow<any, any, any>[]> = NormalizeContext<
+  UnionToIntersection<FlowContext<Flows[number]>>
+>;
 
 export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
   private constructor(private runPromise: (helpers: ResultFlowHelpers<E>, extras: Extras<C>) => Promise<A>) {}
@@ -86,6 +102,33 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
       | (() => ResultAsync<A, E>),
   ): ResultFlow<A, E, C> {
     return ResultFlow.from(value);
+  }
+
+  static allSettled<const Flows extends readonly ResultFlow<any, any, any>[]>(
+    flows: Flows,
+  ): ResultFlow<
+    AllSettledValues<Flows>,
+    AllSettledError<Flows>,
+    AllSettledContext<Flows>
+  > {
+    return ResultFlow.of<
+      AllSettledValues<Flows>,
+      AllSettledError<Flows>,
+      AllSettledContext<Flows>
+    >(async ({ tryTo }, extras) => {
+      const values: unknown[] = [];
+      const flowsToRun = flows as readonly ResultFlow<
+        unknown,
+        AllSettledError<Flows>,
+        AllSettledContext<Flows>
+      >[];
+
+      for (const flow of flowsToRun) {
+        values.push(await tryTo(flow.run(extras)));
+      }
+
+      return values as AllSettledValues<Flows>;
+    });
   }
 
   async run(
