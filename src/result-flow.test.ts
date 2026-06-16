@@ -1022,6 +1022,34 @@ describe('ResultFlow', () => {
         deepEqual(beforeRetryMock.mock.callCount(), 0);
         deepEqual(result._unsafeUnwrapErr(), defaultError);
       });
+
+      it('should wait according to the retry strategy before retrying', async (context) => {
+        const setTimeoutMock = context.mock.method(globalThis, 'setTimeout', (callback: () => void) => {
+          callback();
+          return 0 as unknown as NodeJS.Timeout;
+        });
+        const numberOfFailures = 2;
+        const mockAction = mock.fn(
+          () => N.ok(success),
+          () => N.err(defaultError),
+          { times: numberOfFailures },
+        );
+        const resultFlow = ResultFlow.from(mockAction).retryPolicy({
+          maxRetries: numberOfFailures,
+          retryStrategy: {
+            type: 'exponentialBackoff',
+            baseDelayMs: 100,
+          },
+        });
+
+        const result = await resultFlow.run();
+
+        deepEqual(mockAction.mock.callCount(), 3);
+        deepEqual(setTimeoutMock.mock.callCount(), 2);
+        deepEqual(setTimeoutMock.mock.calls[0]?.arguments[1], 100);
+        deepEqual(setTimeoutMock.mock.calls[1]?.arguments[1], 200);
+        deepEqual(result._unsafeUnwrap(), success);
+      });
     });
 
     describe('Given a condition is passed', () => {
