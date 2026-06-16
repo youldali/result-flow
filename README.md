@@ -17,6 +17,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
 - [Recipes](#recipes)
   - [Chain Operations And Stop On First Failure](#chain-operations-and-stop-on-first-failure)
   - [Pipe Values With Chain](#pipe-values-with-chain)
+  - [Validate A Success Value](#validate-a-success-value)
   - [Handle One Failure Manually](#handle-one-failure-manually)
   - [Fallback To Another Flow](#fallback-to-another-flow)
   - [Use Generator Syntax](#use-generator-syntax)
@@ -31,6 +32,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
   - [`ResultFlow.gen`](#resultflowgen)
   - [`run`](#run)
   - [`map`](#map)
+  - [`ensure`](#ensure)
   - [`mapError`](#maperror)
   - [`chain`](#chain)
   - [`orElse`](#orelse)
@@ -162,7 +164,7 @@ ResultFlow.of<User, UserError, { requestId: string }>(async () => ({
 
 A flow is a thunk: a description of work. Nothing runs until you call `run()`.
 
-Methods such as `map`, `chain`, `orElse`, and `retryPolicy` return new flows. They do not mutate the original flow.
+Methods such as `map`, `ensure`, `chain`, `orElse`, and `retryPolicy` return new flows. They do not mutate the original flow.
 
 ```ts
 const base = ResultFlow.from(N.ok(10));
@@ -259,6 +261,36 @@ const result = await ResultFlow
 ```
 
 `chain` accepts callbacks that return a `ResultFlow`, `Result`, `ResultAsync`, or `Promise<Result>`.
+
+### Validate A Success Value
+
+Use `ensure` when you want to keep a success value as-is only if it passes a predicate.
+
+```ts
+const result = await ResultFlow
+  .from(N.ok(10))
+  .ensure(
+    (value) => value >= 10,
+    (value) => ({ reason: 'too-small' as const, value }),
+  )
+  .run();
+
+// Ok(10)
+```
+
+When the predicate returns `false`, the flow becomes an `Err` using the value returned by `onFailure`.
+
+```ts
+const result = await ResultFlow
+  .from(N.ok(5))
+  .ensure(
+    (value) => value >= 10,
+    (value) => ({ reason: 'too-small' as const, value }),
+  )
+  .run();
+
+// Err({ reason: 'too-small', value: 5 })
+```
 
 ### Handle One Failure Manually
 
@@ -624,6 +656,35 @@ const result = await ResultFlow
 
 // Ok(15)
 ```
+
+### `ensure`
+
+Validates a success value. If the predicate passes, the original value is kept unchanged. If the predicate fails, the flow becomes a failure using the error returned by `onFailure`.
+
+It does not run when the flow is already a failure.
+
+```ts
+flow.ensure<E2>(
+  predicate: (value: A, extras: { context: C }) => boolean | Promise<boolean>,
+  onFailure: (value: A, extras: { context: C }) => E2 | Promise<E2>,
+): ResultFlow<A, E | E2, C>
+```
+
+Example:
+
+```ts
+const result = await ResultFlow
+  .from(N.ok(5))
+  .ensure(
+    (value) => value >= 10,
+    (value) => ({ code: 'too-small' as const, value }),
+  )
+  .run();
+
+// Err({ code: 'too-small', value: 5 })
+```
+
+If `predicate` or `onFailure` throws or rejects, `run()` rejects with that exception.
 
 ### `mapError`
 

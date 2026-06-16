@@ -524,6 +524,121 @@ describe('ResultFlow', () => {
     });
   });
 
+  describe('ensure', () => {
+    it('should return the original success value when the predicate returns true', async () => {
+      const result = await ResultFlow
+        .from<number, never>(N.ok(10))
+        .ensure((value) => value === 10, () => 'too-small')
+        .run();
+
+      deepEqual(result, N.ok(10));
+    });
+
+    it('should return the new failure when the predicate returns false', async () => {
+      const result = await ResultFlow
+        .from<number, 'original-error'>(N.ok(10))
+        .ensure((value) => value > 10, (value) => ({ reason: 'too-small' as const, value }))
+        .run();
+
+      deepEqual(result, N.err({ reason: 'too-small', value: 10 }));
+    });
+
+    it('should skip the predicate and onFailure when the current flow is a failure', async () => {
+      const predicate = mock.fn((_value: number) => true);
+      const onFailure = mock.fn((_value: number) => 'new-error');
+
+      const result = await ResultFlow
+        .from<number, 'original-error'>(N.err('original-error'))
+        .ensure(predicate, onFailure)
+        .run();
+
+      deepEqual(result, N.err('original-error'));
+      deepEqual(predicate.mock.callCount(), 0);
+      deepEqual(onFailure.mock.callCount(), 0);
+    });
+
+    it('should support an async predicate', async () => {
+      const result = await ResultFlow
+        .from<number, never>(N.ok(10))
+        .ensure(async (value) => value === 10, () => 'invalid')
+        .run();
+
+      deepEqual(result, N.ok(10));
+    });
+
+    it('should support an async onFailure', async () => {
+      const result = await ResultFlow
+        .from<number, never>(N.ok(10))
+        .ensure(
+          () => false,
+          async (value) => ({ reason: 'invalid' as const, value }),
+        )
+        .run();
+
+      deepEqual(result, N.err({ reason: 'invalid', value: 10 }));
+    });
+
+    it('should pass context to predicate and onFailure', async () => {
+      const predicate = mock.fn((value: number, extras: { context: Context }) => {
+        return value === 10 && extras.context.correlationId === context.correlationId;
+      });
+      const onFailure = mock.fn((value: number, extras: { context: Context }) => {
+        return `${extras.context.userId}:${value}`;
+      });
+
+      const result = await ResultFlow
+        .from<number, string, Context>(N.ok(5))
+        .ensure(predicate, onFailure)
+        .run({ context });
+
+      deepEqual(result, N.err('test-user-id:5'));
+      deepEqual(predicate.mock.calls[0]?.arguments, [5, { context }]);
+      deepEqual(onFailure.mock.calls[0]?.arguments, [5, { context }]);
+    });
+
+    it('should be immutable', async () => {
+      const r1 = ResultFlow.from<number, string>(N.ok(10));
+      const r2 = r1.ensure((value) => value > 10, () => 'too-small');
+
+      deepEqual(await r1.run(), N.ok(10));
+      deepEqual(await r2.run(), N.err('too-small'));
+    });
+
+    it('should reject when the predicate throws', async () => {
+      const resultFlow = ResultFlow.from<number, never>(N.ok(10)).ensure(() => {
+        throw new Error('predicate failed');
+      }, () => 'invalid');
+
+      await rejects(() => resultFlow.run(), /predicate failed/);
+    });
+
+    it('should reject when the predicate rejects', async () => {
+      const resultFlow = ResultFlow.from<number, never>(N.ok(10)).ensure(
+        async () => Promise.reject(new Error('predicate rejected')),
+        () => 'invalid',
+      );
+
+      await rejects(() => resultFlow.run(), /predicate rejected/);
+    });
+
+    it('should reject when onFailure throws', async () => {
+      const resultFlow = ResultFlow.from<number, never>(N.ok(10)).ensure(() => false, () => {
+        throw new Error('onFailure failed');
+      });
+
+      await rejects(() => resultFlow.run(), /onFailure failed/);
+    });
+
+    it('should reject when onFailure rejects', async () => {
+      const resultFlow = ResultFlow.from<number, never>(N.ok(10)).ensure(
+        () => false,
+        async () => Promise.reject(new Error('onFailure rejected')),
+      );
+
+      await rejects(() => resultFlow.run(), /onFailure rejected/);
+    });
+  });
+
   describe('mapError', () => {
     it('should map the function over the error when it is a failure', async () => {
       const resultFlow = ResultFlow.of<number, string>(async ({ fail }) => {
