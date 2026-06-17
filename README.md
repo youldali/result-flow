@@ -23,6 +23,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
   - [Run Side Effects After Any Result](#run-side-effects-after-any-result)
   - [Use Generator Syntax](#use-generator-syntax)
   - [Combine Independent Flows](#combine-independent-flows)
+  - [Use The First Successful Flow](#use-the-first-successful-flow)
   - [Race Concurrent Flows](#race-concurrent-flows)
   - [Retry Transient Failures](#retry-transient-failures)
   - [Fail On Timeout](#fail-on-timeout)
@@ -34,6 +35,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
   - [`ResultFlow.isResultFlow`](#resultflowisresultflow)
   - [`ResultFlow.gen`](#resultflowgen)
   - [`ResultFlow.allSettled`](#resultflowallsettled)
+  - [`ResultFlow.firstOk`](#resultflowfirstok)
   - [`ResultFlow.race`](#resultflowrace)
   - [`run`](#run)
   - [`map`](#map)
@@ -416,6 +418,25 @@ const result = await ResultFlow
 // Err('quota-exceeded')
 ```
 
+### Use The First Successful Flow
+
+Use `ResultFlow.firstOk` when several flows can satisfy the same request and you want to try them in order until one succeeds.
+
+```ts
+const result = await ResultFlow
+  .firstOk([
+    ResultFlow.from<User, 'cache-miss'>(() => readFromCache('user-1')),
+    ResultFlow.from<User, 'replica-miss'>(() => readFromReplica('user-1')),
+    ResultFlow.from<User, 'not-found'>(() => readFromDatabase('user-1')),
+  ] as const)
+  .run();
+
+// Ok(user) from the first successful flow,
+// or Err(['cache-miss', 'replica-miss', 'not-found']) if all fail.
+```
+
+The returned flow is lazy. It runs input flows sequentially, one at a time, in array order. As soon as one flow returns `Ok`, `firstOk` returns that value and does not run any later flows. Each executed flow receives the same context, and thrown exceptions or rejected promises still reject `run()`.
+
 ### Race Concurrent Flows
 
 Use `ResultFlow.race` when several flows can answer the same question and you want the first settled `Result`.
@@ -718,6 +739,40 @@ await flow.run({ context: { requestId: 'req-123' } });
 ```
 
 An empty input array succeeds with `Ok([])`.
+
+### `ResultFlow.firstOk`
+
+Combines multiple `ResultFlow`s into one lazy flow. The returned flow runs input flows sequentially, one at a time, in array order and returns the first `Ok` value. Earlier `Err` values are collected and ignored while more candidates are available. Once a flow returns `Ok`, later flows are not run.
+
+```ts
+ResultFlow.firstOk(flows): ResultFlow<Successes, Errors[], Context>
+```
+
+Example:
+
+```ts
+const flow = ResultFlow.firstOk([
+  ResultFlow.from<number, 'primary-failed'>(N.err('primary-failed')),
+  ResultFlow.from<number, 'backup-failed'>(N.ok(10)),
+] as const);
+
+await flow.run(); // Ok(10)
+```
+
+If every input flow fails, the returned flow fails with the collected errors in execution order.
+
+```ts
+const flow = ResultFlow.firstOk([
+  ResultFlow.from<number, 'primary-failed'>(N.err('primary-failed')),
+  ResultFlow.from<number, 'backup-failed'>(N.err('backup-failed')),
+] as const);
+
+await flow.run(); // Err(['primary-failed', 'backup-failed'])
+```
+
+Success types are unioned, error types are returned as an array of the unioned error type, and context types are combined so the returned flow requires the context needed by every input flow.
+
+An empty input array rejects with `Error('ResultFlow.firstOk requires at least one flow')`.
 
 ### `ResultFlow.race`
 

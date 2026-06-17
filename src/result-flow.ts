@@ -36,6 +36,7 @@ type FlowError<F> = F extends ResultFlow<any, infer E, any> ? E : never;
 type FlowContext<F> = F extends ResultFlow<any, any, infer C> ? C : never;
 type FlowSuccesses<Flows extends readonly ResultFlow<any, any, any>[]> = FlowSuccess<Flows[number]>;
 type FlowErrors<Flows extends readonly ResultFlow<any, any, any>[]> = FlowError<Flows[number]>;
+type FlowErrorArray<Flows extends readonly ResultFlow<any, any, any>[]> = FlowErrors<Flows>[];
 type NormalizeContext<C> = IsAny<C> extends true
   ? DefaultContext
   : C extends BaseContext
@@ -129,6 +130,43 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
       }
 
       return values as FlowValues<Flows>;
+    });
+  }
+
+  static firstOk<const Flows extends readonly ResultFlow<any, any, any>[]>(
+    flows: Flows,
+  ): ResultFlow<
+    FlowSuccesses<Flows>,
+    FlowErrorArray<Flows>,
+    FlowContexts<Flows>
+  > {
+    return ResultFlow.of<
+      FlowSuccesses<Flows>,
+      FlowErrorArray<Flows>,
+      FlowContexts<Flows>
+    >(async ({ fail }, extras) => {
+      if (flows.length === 0) {
+        throw new Error('ResultFlow.firstOk requires at least one flow');
+      }
+
+      const errors: FlowErrors<Flows>[] = [];
+      const flowsToRun = flows as readonly ResultFlow<
+        FlowSuccesses<Flows>,
+        FlowErrors<Flows>,
+        FlowContexts<Flows>
+      >[];
+
+      for (const flow of flowsToRun) {
+        const result = await flow.run(extras);
+
+        if (result.isOk()) {
+          return result.value;
+        }
+
+        errors.push(result.error);
+      }
+
+      return fail(errors);
     });
   }
 

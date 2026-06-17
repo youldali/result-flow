@@ -624,6 +624,206 @@ describe('ResultFlow', () => {
     });
   });
 
+  describe('firstOk', () => {
+    it('should not execute any flow before .run() is called', () => {
+      const first = mock.fn(() => N.ok(1));
+      const second = mock.fn(() => N.ok(2));
+
+      ResultFlow.firstOk([
+        ResultFlow.from(first),
+        ResultFlow.from(second),
+      ]);
+
+      deepEqual(first.mock.callCount(), 0);
+      deepEqual(second.mock.callCount(), 0);
+    });
+
+    it('should return the first success when the first flow succeeds', async () => {
+      const result = await ResultFlow.firstOk([
+        ResultFlow.from<number, 'first-error'>(N.ok(1)),
+        ResultFlow.from<number, 'second-error'>(N.ok(2)),
+      ]).run();
+
+      deepEqual(result, N.ok(1));
+    });
+
+    it('should ignore earlier failures and return a later success', async () => {
+      const result = await ResultFlow.firstOk([
+        ResultFlow.from<number, 'first-error'>(N.err('first-error')),
+        ResultFlow.from<number, 'second-error'>(N.err('second-error')),
+        ResultFlow.from<number, 'third-error'>(N.ok(3)),
+      ]).run();
+
+      deepEqual(result, N.ok(3));
+    });
+
+    it('should stop executing flows after the first success', async () => {
+      const first = mock.fn(() => N.err('first-error' as const));
+      const second = mock.fn(() => N.ok(2));
+      const third = mock.fn(() => N.ok(3));
+
+      const result = await ResultFlow.firstOk([
+        ResultFlow.from(first),
+        ResultFlow.from(second),
+        ResultFlow.from(third),
+      ]).run();
+
+      deepEqual(result, N.ok(2));
+      deepEqual(first.mock.callCount(), 1);
+      deepEqual(second.mock.callCount(), 1);
+      deepEqual(third.mock.callCount(), 0);
+    });
+
+    it('should return Err([errors]) when every flow fails', async () => {
+      const result = await ResultFlow.firstOk([
+        ResultFlow.from<number, 'first-error'>(N.err('first-error')),
+        ResultFlow.from<number, 'second-error'>(N.err('second-error')),
+      ]).run();
+
+      deepEqual(result, N.err(['first-error', 'second-error']));
+    });
+
+    it('should reject with a clear error for an empty array', async () => {
+      await rejects(
+        () => ResultFlow.firstOk([]).run(),
+        /ResultFlow\.firstOk requires at least one flow/,
+      );
+    });
+
+    it('should preserve failure order in the returned error array', async () => {
+      const result = await ResultFlow.firstOk([
+        ResultFlow.from<number, { step: 1 }>(N.err({ step: 1 })),
+        ResultFlow.from<number, { step: 2 }>(N.err({ step: 2 })),
+        ResultFlow.from<number, { step: 3 }>(N.err({ step: 3 })),
+      ] as const).run();
+
+      deepEqual(result, N.err([{ step: 1 }, { step: 2 }, { step: 3 }]));
+    });
+
+    it('should pass context to each executed flow', async () => {
+      const first = mock.fn();
+      const second = mock.fn();
+
+      const result = await ResultFlow.firstOk([
+        ResultFlow.of<number, string, Context>(async ({ fail }, extras) => {
+          first(extras);
+          return fail('first-error');
+        }),
+        ResultFlow.of<number, string, Context>(async (_helpers, extras) => {
+          second(extras);
+          return extras.context.userId.length;
+        }),
+      ]).run({ context });
+
+      deepEqual(result, N.ok(12));
+      deepEqual(first.mock.calls[0]?.arguments, [{ context }]);
+      deepEqual(second.mock.calls[0]?.arguments, [{ context }]);
+    });
+
+    it('should not pass context to flows skipped after the first success', async () => {
+      const first = mock.fn();
+      const second = mock.fn();
+
+      const result = await ResultFlow.firstOk([
+        ResultFlow.of<number, never, Context>(async (_helpers, extras) => {
+          first(extras);
+          return extras.context.correlationId.length;
+        }),
+        ResultFlow.of<number, never, Context>(async (_helpers, extras) => {
+          second(extras);
+          return extras.context.userId.length;
+        }),
+      ]).run({ context });
+
+      deepEqual(result, N.ok(19));
+      deepEqual(first.mock.calls[0]?.arguments, [{ context }]);
+      deepEqual(second.mock.callCount(), 0);
+    });
+
+    it('should reject when an executed flow throws or rejects', async () => {
+      await rejects(
+        () => ResultFlow.firstOk([
+          ResultFlow.from<number, 'first-error'>(N.err('first-error')),
+          ResultFlow.of<number, never>(async () => {
+            throw new Error('flow threw');
+          }),
+        ]).run(),
+        /flow threw/,
+      );
+
+      await rejects(
+        () => ResultFlow.firstOk([
+          ResultFlow.from<number, 'first-error'>(N.err('first-error')),
+          ResultFlow.from<number, never>(Promise.reject(new Error('flow rejected'))),
+        ]).run(),
+        /flow rejected/,
+      );
+    });
+
+    it('should be immutable', async () => {
+      const first = ResultFlow.from(N.err('first-error' as const));
+      const second = ResultFlow.from(N.ok(2));
+      const flows = Object.freeze([first, second] as const);
+      const firstSuccessful = ResultFlow.firstOk(flows);
+
+      deepEqual(flows, [first, second]);
+      deepEqual(await first.run(), N.err('first-error'));
+      deepEqual(await second.run(), N.ok(2));
+      deepEqual(await firstSuccessful.run(), N.ok(2));
+      deepEqual(flows, [first, second]);
+    });
+
+    it('should preserve success union types', async () => {
+      const flow = ResultFlow.firstOk([
+        ResultFlow.from<1, { reason: 'first' }>(N.err({ reason: 'first' })),
+        ResultFlow.from<'two', { reason: 'second' }>(N.ok('two' as const)),
+      ] as const);
+      const typedFlow: ResultFlow<
+        1 | 'two',
+        ({ reason: 'first' } | { reason: 'second' })[]
+      > = flow;
+
+      const result = await typedFlow.run();
+
+      deepEqual(result, N.ok('two'));
+    });
+
+    it('should return an array of unioned error types', async () => {
+      const flow = ResultFlow.firstOk([
+        ResultFlow.from<number, { reason: 'first' }>(N.err({ reason: 'first' })),
+        ResultFlow.from<string, { reason: 'second' }>(N.err({ reason: 'second' })),
+      ] as const);
+      const typedFlow: ResultFlow<
+        number | string,
+        ({ reason: 'first' } | { reason: 'second' })[]
+      > = flow;
+
+      const result = await typedFlow.run();
+
+      deepEqual(result, N.err([{ reason: 'first' }, { reason: 'second' }]));
+    });
+
+    it('should require combined context when input flows have context', async () => {
+      type FirstContext = { correlationId: string };
+      type SecondContext = { userId: string };
+      const flow = ResultFlow.firstOk([
+        ResultFlow.of<number, { reason: 'first' }, FirstContext>(async ({ fail }) => fail({ reason: 'first' })),
+        ResultFlow.of<string, { reason: 'second' }, SecondContext>(async (_helpers, { context }) => context.userId),
+      ] as const);
+      const typedFlow: ResultFlow<
+        number | string,
+        ({ reason: 'first' } | { reason: 'second' })[],
+        FirstContext & SecondContext
+      > = flow;
+
+      const result = await typedFlow.run({
+        context: { correlationId: 'test-correlation-id', userId: 'test-user-id' },
+      });
+
+      deepEqual(result, N.ok('test-user-id'));
+    });
+  });
+
   describe('race', () => {
     it('should not execute any flow before .run() is called', () => {
       const first = mock.fn();
