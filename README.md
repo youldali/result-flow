@@ -10,6 +10,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [API At A Glance](#api-at-a-glance)
+- [Choosing Related Methods](#choosing-related-methods)
 - [Core Concepts](#core-concepts)
   - [Type Parameters](#type-parameters)
   - [Lazy And Immutable](#lazy-and-immutable)
@@ -159,7 +160,7 @@ Both versions return the same type:
 | Observe results | `tap`, `tapError`, `finally`, `tapBoth` | You want side effects such as logging, metrics, or cleanup while preserving the original result. |
 | Validate success values | `ensure` | You want to keep a success value only if it passes a predicate. |
 | Recover from failures | `recover` | You want to turn a failure into an infallible fallback success value. |
-| Control execution | `retryPolicy`, `repeatUntil`, `timeout`, `runPeriodically` | You want retries, polling, time limits, or repeated execution around the same lazy flow. |
+| Control execution | `retryPolicy`, `repeatUntil`, `timeout`, `runPeriodically` | You want retries, readiness polling, time limits, or background interval execution. |
 | Coordinate flows | `all`, `allSettled`, `race`, `firstOk` | You want to combine multiple lazy flows. |
 
 Aliases:
@@ -168,6 +169,42 @@ Aliases:
 - `tap` is the success-side observer. `ifSuccess` is kept as the more explicit name.
 - `tapError` is the failure-side observer. `ifFailure` is kept as the more explicit name.
 - `tapBoth` is an alias for `finally`.
+
+## Choosing Related Methods
+
+Some methods are intentionally close to each other. The difference is what signal they react to and whether they return one final `Result`.
+
+### Repeating Work
+
+| Method | Repeats When | Stops When | Returns |
+| --- | --- | --- | --- |
+| `retryPolicy` | The flow returns `Err(error)` and the retry condition allows it. | The flow returns `Ok`, the retry condition rejects the error, or retries are exhausted. | A single final `Promise<Result<A, E>>` from `run()`. |
+| `repeatUntil` | The flow returns `Ok(value)` but the predicate says the value is not ready. | The predicate passes, the flow returns `Err`, or repeats are exhausted. | A single final `Promise<Result<A, E | E2>>` from `run()`. |
+| `runPeriodically` | A timer interval elapses. | The loop is aborted, the flow fails without recovery, or recovery fails. | `void`; it starts background work and reports interruption through callbacks. |
+
+In short:
+
+```text
+retryPolicy     -> repeat failed attempts
+repeatUntil     -> poll until a successful value is ready
+runPeriodically -> run ongoing background work
+```
+
+### Fallbacks
+
+| Method | Fallback Returns | Use When |
+| --- | --- | --- |
+| `orElse` | Another `Result`, `ResultAsync`, `Promise<Result>`, or `ResultFlow`. | The fallback work can fail. |
+| `recover` | A plain value or `Promise` of a plain value. | The fallback is infallible and should turn failure into `Ok`. |
+
+### Combining Flows
+
+| Method | Execution | Failure Behavior |
+| --- | --- | --- |
+| `all` | Runs flows in order. | Stops on the first `Err`; otherwise returns `Ok([...values])`. |
+| `allSettled` | Starts every flow in parallel. | Collects every `Result` and returns `Ok([...results])`; input `Err` values do not fail the outer flow. |
+| `firstOk` | Runs flows in order. | Ignores `Err` values until one flow returns `Ok`; fails with all errors if none succeed. |
+| `race` | Starts every flow in parallel. | Returns the first settled `Result`, whether it is `Ok` or `Err`. |
 
 ## Core Concepts
 
@@ -551,20 +588,18 @@ const result = await ResultFlow
 
 `maxRetries` is the number of retries after the first attempt. With `maxRetries: 3`, the operation can run up to 4 times.
 
+`retryPolicy` only repeats `Err` results. If the flow returns `Ok(value)`, it stops even if that value represents a pending or not-ready state.
+
 ### Poll Until A Success Value Is Ready
 
-Use `repeatUntil` when the flow succeeds, but the success value says the work is not ready yet.
+Use `repeatUntil` when a request should wait for one final ready value. It repeats only when the flow succeeds but the success value says the work is not ready yet.
 
 ```ts
 type JobStatus =
   | { id: string; status: 'queued' | 'running' }
   | { id: string; status: 'done'; resultUrl: string };
 
-type JobError =
-  | { reason: 'not-found' }
-  | { reason: 'job-not-ready'; lastStatus: JobStatus['status'] };
-
-declare function getJobStatus(id: string): Promise<N.Result<JobStatus, { reason: 'not-found' }>>;
+declare function getJobStatus(id: string): ResultAsync<JobStatus, { reason: 'not-found' }>;
 
 const result = await ResultFlow
   .from(() => getJobStatus('job-123'))
@@ -587,7 +622,7 @@ const result = await ResultFlow
 // or Err({ reason: 'job-not-ready', lastStatus: 'queued' | 'running' })
 ```
 
-`repeatUntil` only repeats successful `Ok(value)` results whose predicate returns `false`. If the wrapped flow returns `Err`, it stops immediately and returns that original error.
+`repeatUntil` only repeats successful `Ok(value)` results whose predicate returns `false`. If the wrapped flow returns `Err`, it stops immediately and returns that original error. Unlike `runPeriodically`, the caller awaits one final `Result`.
 
 Choose between the execution helpers by the signal you want to react to:
 
@@ -632,7 +667,7 @@ Timeouts are returned as typed `Err` values. External aborts are not mapped by `
 
 ### Run A Flow Periodically
 
-Use `runPeriodically` for polling, health checks, or scheduled maintenance loops.
+Use `runPeriodically` for ongoing background loops such as health checks or scheduled maintenance.
 
 ```ts
 const controller = new AbortController();
@@ -661,6 +696,8 @@ healthCheck.runPeriodically({
 // Later, when the loop should stop:
 controller.abort();
 ```
+
+`runPeriodically` returns `void`. It starts an interval and reports why the loop stopped through `onInterruption`.
 
 If the periodic flow fails and there is no recovery action, the interval stops. If the recovery action succeeds, the interval continues. If recovery fails, the interval stops and `onInterruption` receives both the original error and the recovery error.
 
@@ -1303,7 +1340,7 @@ If the effect throws or rejects, the exception is not handled by `ResultFlow`; `
 
 ### `retryPolicy`
 
-Retries the previous flow when it returns an `Err`.
+Retries the previous flow when it returns an `Err`. It is for transient failures: network errors, timeouts, version conflicts, and similar failed attempts.
 
 ```ts
 flow.retryPolicy(params?: {
@@ -1349,7 +1386,7 @@ Only the flow before `retryPolicy` is retried. Steps appended after `retryPolicy
 
 ### `repeatUntil`
 
-Repeats the previous flow when it returns `Ok(value)` and `predicate(value)` returns `false`.
+Repeats the previous flow when it returns `Ok(value)` and `predicate(value)` returns `false`. It is for successful-but-not-ready values, such as a job status that is still `queued` or `running`.
 
 ```ts
 flow.repeatUntil<E2>(params: {
@@ -1399,7 +1436,7 @@ If the wrapped flow returns `Err`, `repeatUntil` stops immediately and returns t
 
 Only the flow before `repeatUntil` is repeated. Steps appended after `repeatUntil` run once after the repeat loop completes.
 
-`retryPolicy`, `repeatUntil`, and `runPeriodically` repeat for different reasons: `retryPolicy` repeats returned failures, `repeatUntil` repeats not-ready successes, and `runPeriodically` schedules ongoing interval execution rather than returning a single final `Result`.
+`retryPolicy`, `repeatUntil`, and `runPeriodically` repeat for different reasons: `retryPolicy` repeats returned failures, `repeatUntil` repeats not-ready successes and returns one final `Result`, and `runPeriodically` schedules ongoing interval execution rather than returning a final `Result`.
 
 ### `timeout`
 
@@ -1432,12 +1469,12 @@ Composition order with `retryPolicy` is significant: `flow.timeout(...).retryPol
 
 ### `runPeriodically`
 
-Runs the flow repeatedly with `setInterval`.
+Runs the flow repeatedly with `setInterval`. It is for background work and returns `void`, not a final `Result`.
 
 ```ts
 flow.runPeriodically<E2>(params: {
   interval: number;
-  recoveryAction?: (error: E, extras: { context: C }) =>
+  recoveryAction?: (error: E, extras: { context: C; abortSignal?: AbortSignal }) =>
     | ResultFlow<unknown, E2>
     | N.Result<unknown, E2>
     | N.ResultAsync<unknown, E2>
