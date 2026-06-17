@@ -256,7 +256,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     return this.executeWithExtras(extras);
   }
 
-  async match<B>(
+  async runAndMatch<B>(
     handlers: {
       ok: (value: A, extras: Extras<C>) => B | Promise<B>;
       err: (error: E, extras: Extras<C>) => B | Promise<B>;

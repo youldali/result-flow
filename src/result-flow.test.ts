@@ -343,9 +343,9 @@ describe('ResultFlow', () => {
     });
   });
 
-  describe('match', () => {
+  describe('runAndMatch', () => {
     it('calls ok handler and returns its value when the flow succeeds', async () => {
-      const result = await ResultFlow.from<number, string>(N.ok(10)).match({
+      const result = await ResultFlow.from<number, string>(N.ok(10)).runAndMatch({
         ok: (value) => ({ status: 200, body: value }),
         err: () => ({ status: 500, body: 0 }),
       });
@@ -356,7 +356,7 @@ describe('ResultFlow', () => {
     it('does not call err handler when the flow succeeds', async () => {
       const err = mock.fn();
 
-      await ResultFlow.from<number, string>(N.ok(10)).match({
+      await ResultFlow.from<number, string>(N.ok(10)).runAndMatch({
         ok: (value) => value,
         err,
       });
@@ -365,7 +365,7 @@ describe('ResultFlow', () => {
     });
 
     it('calls err handler and returns its value when the flow fails', async () => {
-      const result = await ResultFlow.from<number, string>(N.err('error')).match<{ status: number; body: unknown }>({
+      const result = await ResultFlow.from<number, string>(N.err('error')).runAndMatch<{ status: number; body: unknown }>({
         ok: () => ({ status: 200, body: 0 }),
         err: (error) => ({ status: 400, body: error }),
       });
@@ -376,7 +376,7 @@ describe('ResultFlow', () => {
     it('does not call ok handler when the flow fails', async () => {
       const ok = mock.fn();
 
-      await ResultFlow.from<number, string>(N.err('error')).match({
+      await ResultFlow.from<number, string>(N.err('error')).runAndMatch({
         ok,
         err: (error) => error,
       });
@@ -385,7 +385,7 @@ describe('ResultFlow', () => {
     });
 
     it('supports async ok handler', async () => {
-      const result = await ResultFlow.from<number, string>(N.ok(10)).match({
+      const result = await ResultFlow.from<number, string>(N.ok(10)).runAndMatch({
         ok: async (value) => value + 5,
         err: async () => 0,
       });
@@ -394,7 +394,7 @@ describe('ResultFlow', () => {
     });
 
     it('supports async err handler', async () => {
-      const result = await ResultFlow.from<number, string>(N.err('error')).match({
+      const result = await ResultFlow.from<number, string>(N.err('error')).runAndMatch({
         ok: async () => 'ok',
         err: async (error) => `handled:${error}`,
       });
@@ -406,7 +406,7 @@ describe('ResultFlow', () => {
       type Context = { requestId: string };
       const requestContext: Context = { requestId: 'req-123' };
 
-      const result = await ResultFlow.from<number, string, Context>(N.ok(10)).match({
+      const result = await ResultFlow.from<number, string, Context>(N.ok(10)).runAndMatch({
         ok: (_value, extras) => extras.context.requestId,
         err: () => 'error',
       }, { context: requestContext });
@@ -417,7 +417,7 @@ describe('ResultFlow', () => {
     it('passes abortSignal to the selected handler', async () => {
       const abortController = new AbortController();
 
-      const result = await ResultFlow.from<number, string>(N.ok(10)).match({
+      const result = await ResultFlow.from<number, string>(N.ok(10)).runAndMatch({
         ok: (_value, extras) => extras.abortSignal,
         err: () => undefined,
       }, { abortSignal: abortController.signal });
@@ -425,8 +425,8 @@ describe('ResultFlow', () => {
       strictEqual(result, abortController.signal);
     });
 
-    it('allows calling match with no context when the flow has no context type', async () => {
-      const result = await ResultFlow.from<number, string>(N.ok(10)).match({
+    it('allows calling runAndMatch with no context when the flow has no context type', async () => {
+      const result = await ResultFlow.from<number, string>(N.ok(10)).runAndMatch({
         ok: (value) => value,
         err: () => 0,
       });
@@ -440,13 +440,13 @@ describe('ResultFlow', () => {
 
       if (false) {
         // @ts-expect-error Context is required for context-aware flows.
-        void flow.match({
+        void flow.runAndMatch({
           ok: (value) => value,
           err: () => 0,
         });
       }
 
-      const result = await flow.match({
+      const result = await flow.runAndMatch({
         ok: (value, extras) => value * extras.context.multiplier,
         err: () => 0,
       }, { context: { multiplier: 3 } });
@@ -461,7 +461,7 @@ describe('ResultFlow', () => {
         throw new Error('flow threw');
       });
 
-      await rejects(() => resultFlow.match({ ok, err }), /flow threw/);
+      await rejects(() => resultFlow.runAndMatch({ ok, err }), /flow threw/);
       strictEqual(ok.mock.callCount(), 0);
       strictEqual(err.mock.callCount(), 0);
     });
@@ -471,14 +471,14 @@ describe('ResultFlow', () => {
       const err = mock.fn();
       const resultFlow = ResultFlow.from<number, string>(() => Promise.reject(new Error('flow rejected')));
 
-      await rejects(() => resultFlow.match({ ok, err }), /flow rejected/);
+      await rejects(() => resultFlow.runAndMatch({ ok, err }), /flow rejected/);
       strictEqual(ok.mock.callCount(), 0);
       strictEqual(err.mock.callCount(), 0);
     });
 
     it('rejects when the selected handler throws', async () => {
       await rejects(
-        () => ResultFlow.from<number, string>(N.ok(10)).match({
+        () => ResultFlow.from<number, string>(N.ok(10)).runAndMatch({
           ok: () => {
             throw new Error('handler threw');
           },
@@ -490,7 +490,7 @@ describe('ResultFlow', () => {
 
     it('rejects when the selected handler rejects', async () => {
       await rejects(
-        () => ResultFlow.from<number, string>(N.err('error')).match({
+        () => ResultFlow.from<number, string>(N.err('error')).runAndMatch({
           ok: () => 0,
           err: async () => {
             throw new Error('handler rejected');
@@ -503,7 +503,7 @@ describe('ResultFlow', () => {
     it('does not mutate the original flow', async () => {
       const base = ResultFlow.from<number, string>(N.ok(10));
 
-      const matched = await base.match({
+      const matched = await base.runAndMatch({
         ok: (value) => value * 2,
         err: () => 0,
       });
