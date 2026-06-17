@@ -1,4 +1,4 @@
-import { deepEqual, fail, rejects } from 'node:assert';
+import { deepEqual, fail, rejects, strictEqual } from 'node:assert';
 
 import { describe, it, mock, type Mock, type TestContext } from 'node:test';
 import * as N from 'neverthrow';
@@ -307,7 +307,9 @@ describe('ResultFlow', () => {
       let counter = 0;
       const r1 = ResultFlow.from(N.ok(10));
       await r1.run();
-      const r2 = r1.ifSuccess(() => counter++);
+      const r2 = r1.ifSuccess(() => {
+        counter++;
+      });
       await r1.run();
       deepEqual(counter, 0);
 
@@ -981,7 +983,9 @@ describe('ResultFlow', () => {
     it('should be immutable', async () => {
       let counter = 0;
       const r1 = ResultFlow.from(N.ok(10));
-      const r2 = r1.ifSuccess(() => counter++);
+      const r2 = r1.ifSuccess(() => {
+        counter++;
+      });
 
       await r1.run();
       await r2.run();
@@ -1006,6 +1010,27 @@ describe('ResultFlow', () => {
       });
 
       await rejects(() => resultFlow.run(), /ifSuccess failed/);
+    });
+
+    it('should support async effects', async () => {
+      let effectCompleted = false;
+      const resultFlow = ResultFlow.from<number, never>(N.ok(10));
+
+      const result = await resultFlow.ifSuccess(async () => {
+        await sleep(0);
+        effectCompleted = true;
+      }).run();
+
+      deepEqual(result._unsafeUnwrap(), 10);
+      deepEqual(effectCompleted, true);
+    });
+
+    it('should reject when the effect rejects', async () => {
+      const resultFlow = ResultFlow.from<number, never>(N.ok(10)).ifSuccess(async () => {
+        throw new Error('ifSuccess rejected');
+      });
+
+      await rejects(() => resultFlow.run(), /ifSuccess rejected/);
     });
   });
 
@@ -1065,7 +1090,9 @@ describe('ResultFlow', () => {
     it('should be immutable', async () => {
       let counter = 0;
       const r1 = ResultFlow.from(N.err('error'));
-      const r2 = r1.ifFailure(() => counter++);
+      const r2 = r1.ifFailure(() => {
+        counter++;
+      });
 
       await r1.run();
       await r2.run();
@@ -1089,6 +1116,27 @@ describe('ResultFlow', () => {
       });
 
       await rejects(() => resultFlow.run(), /ifFailure failed/);
+    });
+
+    it('should support async effects', async () => {
+      let effectCompleted = false;
+      const resultFlow = ResultFlow.from<number, string>(N.err('error'));
+
+      const result = await resultFlow.ifFailure(async () => {
+        await sleep(0);
+        effectCompleted = true;
+      }).run();
+
+      deepEqual(result._unsafeUnwrapErr(), 'error');
+      deepEqual(effectCompleted, true);
+    });
+
+    it('should reject when the effect rejects', async () => {
+      const resultFlow = ResultFlow.from<number, string>(N.err('error')).ifFailure(async () => {
+        throw new Error('ifFailure rejected');
+      });
+
+      await rejects(() => resultFlow.run(), /ifFailure rejected/);
     });
   });
 
@@ -1116,6 +1164,120 @@ describe('ResultFlow', () => {
 
       deepEqual(value, 10);
       deepEqual(effect.mock.callCount(), 0);
+    });
+  });
+
+  describe('finally', () => {
+    it('should call the effect with the Ok result when the flow succeeds', async () => {
+      const resultFlow = ResultFlow.from<number, never>(N.ok(10));
+      const effect = mock.fn();
+
+      await resultFlow.finally(effect).run();
+
+      deepEqual(effect.mock.calls[0]?.arguments, [N.ok(10), { context: {} }]);
+    });
+
+    it('should return the original success value unchanged', async () => {
+      const value = { id: 1, name: 'test' };
+      const resultFlow = ResultFlow.from<typeof value, never>(N.ok(value));
+
+      const result = await resultFlow.finally(() => undefined).run();
+
+      strictEqual(result._unsafeUnwrap(), value);
+    });
+
+    it('should call the effect with the Err result when the flow fails', async () => {
+      const resultFlow = ResultFlow.from<number, string>(N.err('error'));
+      const effect = mock.fn();
+
+      await resultFlow.finally(effect).run();
+
+      deepEqual(effect.mock.calls[0]?.arguments, [N.err('error'), { context: {} }]);
+    });
+
+    it('should return the original failure unchanged', async () => {
+      const error = { reason: 'not-found' as const };
+      const resultFlow = ResultFlow.from<number, typeof error>(N.err(error));
+
+      const result = await resultFlow.finally(() => undefined).run();
+
+      strictEqual(result._unsafeUnwrapErr(), error);
+    });
+
+    it('should pass context to the effect', async () => {
+      const resultFlow = ResultFlow.from<number, never, Context>(N.ok(10));
+      const effect = mock.fn();
+
+      await resultFlow.finally(effect).run({ context });
+
+      deepEqual(effect.mock.calls[0]?.arguments, [N.ok(10), { context }]);
+    });
+
+    it('should support async effects', async () => {
+      let effectCompleted = false;
+      const resultFlow = ResultFlow.from<number, never>(N.ok(10));
+
+      const result = await resultFlow.finally(async () => {
+        await sleep(0);
+        effectCompleted = true;
+      }).run();
+
+      deepEqual(result._unsafeUnwrap(), 10);
+      deepEqual(effectCompleted, true);
+    });
+
+    it('should be immutable', async () => {
+      const effect = mock.fn();
+      const r1 = ResultFlow.from(N.ok(10));
+      const r2 = r1.finally(effect);
+
+      deepEqual(await r1.run(), N.ok(10));
+      deepEqual(effect.mock.callCount(), 0);
+
+      deepEqual(await r2.run(), N.ok(10));
+      deepEqual(effect.mock.callCount(), 1);
+    });
+
+    it('should reject when the effect throws', async () => {
+      const resultFlow = ResultFlow.from<number, never>(N.ok(10)).finally(() => {
+        throw new Error('finally failed');
+      });
+
+      await rejects(() => resultFlow.run(), /finally failed/);
+    });
+
+    it('should reject when the effect rejects', async () => {
+      const resultFlow = ResultFlow.from<number, never>(N.ok(10)).finally(async () => {
+        throw new Error('finally rejected');
+      });
+
+      await rejects(() => resultFlow.run(), /finally rejected/);
+    });
+
+    it('should not call the effect when the original flow throws or rejects', async () => {
+      const effect = mock.fn();
+      const throwingFlow = ResultFlow.of<number, never>(async () => {
+        throw new Error('original flow threw');
+      }).finally(effect);
+      const rejectingFlow = ResultFlow.from<number, never>(() =>
+        Promise.reject(new Error('original flow rejected')),
+      ).finally(effect);
+
+      await rejects(() => throwingFlow.run(), /original flow threw/);
+      await rejects(() => rejectingFlow.run(), /original flow rejected/);
+      deepEqual(effect.mock.callCount(), 0);
+    });
+  });
+
+  describe('tapBoth', () => {
+    it('should be an alias for finally', async () => {
+      const resultFlow = ResultFlow.from<number, string>(N.err('error'));
+      const effect = mock.fn();
+
+      const result = await resultFlow.tapBoth(effect).run();
+
+      deepEqual(result, N.err('error'));
+      deepEqual(effect.mock.calls[0]?.arguments, [N.err('error'), { context: {} }]);
     });
   });
 

@@ -190,31 +190,52 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     });
   }
 
-  ifSuccess(f: (value: A, extras: Extras<C>) => void): ResultFlow<A, E, C> {
+  ifSuccess(f: (value: A, extras: Extras<C>) => void | Promise<void>): ResultFlow<A, E, C> {
     return ResultFlow.of<A, E, C>(async ({ tryTo }, extras) => {
       const result = await tryTo(this.run(extras));
-      f(result, extras);
+      await f(result, extras);
       return result;
     });
   }
 
-  tap(f: (value: A, extras: Extras<C>) => void): ResultFlow<A, E, C> {
+  tap(f: (value: A, extras: Extras<C>) => void | Promise<void>): ResultFlow<A, E, C> {
     return this.ifSuccess(f);
   }
 
-  ifFailure(f: (value: E, extras: Extras<C>) => void): ResultFlow<A, E, C> {
+  ifFailure(f: (value: E, extras: Extras<C>) => void | Promise<void>): ResultFlow<A, E, C> {
     return ResultFlow.of<A, E, C>(async ({ fail }, extras) => {
       const result = await this.run(extras);
       if (result.isErr()) {
-        f(result.error, extras);
+        await f(result.error, extras);
         fail(result.error);
       }
       return (result as N.Ok<A, E>).value;
     });
   }
 
-  tapError(f: (value: E, extras: Extras<C>) => void): ResultFlow<A, E, C> {
+  tapError(f: (value: E, extras: Extras<C>) => void | Promise<void>): ResultFlow<A, E, C> {
     return this.ifFailure(f);
+  }
+
+  finally(
+    effect: (result: Result<A, E>, extras: Extras<C>) => void | Promise<void>,
+  ): ResultFlow<A, E, C> {
+    return ResultFlow.of<A, E, C>(async ({ fail }, extras) => {
+      const result = await this.run(extras);
+      await effect(result, extras);
+
+      if (result.isErr()) {
+        fail(result.error);
+      }
+
+      return (result as N.Ok<A, E>).value;
+    });
+  }
+
+  tapBoth(
+    effect: (result: Result<A, E>, extras: Extras<C>) => void | Promise<void>,
+  ): ResultFlow<A, E, C> {
+    return this.finally(effect);
   }
 
   orElse<E2, C2 extends BaseContext = DefaultContext>(

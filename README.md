@@ -20,6 +20,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
   - [Validate A Success Value](#validate-a-success-value)
   - [Handle One Failure Manually](#handle-one-failure-manually)
   - [Fallback To Another Flow](#fallback-to-another-flow)
+  - [Run Side Effects After Any Result](#run-side-effects-after-any-result)
   - [Use Generator Syntax](#use-generator-syntax)
   - [Combine Independent Flows](#combine-independent-flows)
   - [Retry Transient Failures](#retry-transient-failures)
@@ -42,6 +43,8 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
   - [`tap`](#tap)
   - [`ifFailure`](#iffailure)
   - [`tapError`](#taperror)
+  - [`finally`](#finally)
+  - [`tapBoth`](#tapboth)
   - [`retryPolicy`](#retrypolicy)
   - [`timeout`](#timeout)
   - [`runPeriodically`](#runperiodically)
@@ -346,6 +349,26 @@ const result = await ResultFlow
 ```
 
 The fallback is not executed when the first flow succeeds.
+
+### Run Side Effects After Any Result
+
+Use `finally` or its alias `tapBoth` when you want to observe the completed `Result` without changing it.
+
+```ts
+const result = await ResultFlow
+  .from(() => saveOrder(order))
+  .finally((result, { context }) => {
+    audit.log({
+      requestId: context.requestId,
+      status: result.isOk() ? 'saved' : 'failed',
+    });
+  })
+  .run({ context: { requestId: 'req-123' } });
+
+// The original Ok or Err is returned unchanged.
+```
+
+The effect runs for returned `Ok` and `Err` values. If the underlying flow throws or rejects instead of returning a `Result`, the effect is not called and `run()` rejects as usual.
 
 ### Use Generator Syntax
 
@@ -853,7 +876,7 @@ Runs a side effect when the flow succeeds, then keeps the original success value
 
 ```ts
 flow.ifSuccess(
-  effect: (value: A, extras: { context: C }) => void,
+  effect: (value: A, extras: { context: C }) => void | Promise<void>,
 ): ResultFlow<A, E, C>
 ```
 
@@ -868,13 +891,15 @@ const result = await ResultFlow
 // Ok(10)
 ```
 
+If the effect throws or rejects, the exception is not handled by `ResultFlow`; `run()` rejects with that exception.
+
 ### `tap`
 
 Alias for `ifSuccess`.
 
 ```ts
 flow.tap(
-  effect: (value: A, extras: { context: C }) => void,
+  effect: (value: A, extras: { context: C }) => void | Promise<void>,
 ): ResultFlow<A, E, C>
 ```
 
@@ -895,7 +920,7 @@ Runs a side effect when the flow fails, then keeps the original failure value.
 
 ```ts
 flow.ifFailure(
-  effect: (error: E, extras: { context: C }) => void,
+  effect: (error: E, extras: { context: C }) => void | Promise<void>,
 ): ResultFlow<A, E, C>
 ```
 
@@ -910,13 +935,15 @@ const result = await ResultFlow
 // Err('error')
 ```
 
+If the effect throws or rejects, the exception is not handled by `ResultFlow`; `run()` rejects with that exception.
+
 ### `tapError`
 
 Alias for `ifFailure`.
 
 ```ts
 flow.tapError(
-  effect: (error: E, extras: { context: C }) => void,
+  effect: (error: E, extras: { context: C }) => void | Promise<void>,
 ): ResultFlow<A, E, C>
 ```
 
@@ -930,6 +957,56 @@ const result = await ResultFlow
 
 // Err('error')
 ```
+
+### `finally`
+
+Runs a side effect after the flow returns either `Ok` or `Err`, then keeps the original result unchanged.
+
+```ts
+flow.finally(
+  effect: (result: N.Result<A, E>, extras: { context: C }) => void | Promise<void>,
+): ResultFlow<A, E, C>
+```
+
+Example:
+
+```ts
+const result = await ResultFlow
+  .from<number, 'not-found'>(N.err('not-found'))
+  .finally((result) => {
+    console.log(result.isOk() ? 'ok' : `failed: ${result.error}`);
+  })
+  .run();
+
+// Err('not-found')
+```
+
+If the effect throws or rejects, the exception is not handled by `ResultFlow`; `run()` rejects with that exception. If the wrapped flow throws or rejects before returning a `Result`, the effect is not called.
+
+### `tapBoth`
+
+Alias for `finally`.
+
+```ts
+flow.tapBoth(
+  effect: (result: N.Result<A, E>, extras: { context: C }) => void | Promise<void>,
+): ResultFlow<A, E, C>
+```
+
+Example:
+
+```ts
+const result = await ResultFlow
+  .from(N.ok(10))
+  .tapBoth((result) => {
+    console.log(result.isOk() ? `Success: ${result.value}` : 'Failed');
+  })
+  .run();
+
+// Ok(10)
+```
+
+If the effect throws or rejects, the exception is not handled by `ResultFlow`; `run()` rejects with that exception. If the wrapped flow throws or rejects before returning a `Result`, the effect is not called.
 
 ### `retryPolicy`
 
