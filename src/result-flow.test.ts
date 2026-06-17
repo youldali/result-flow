@@ -45,6 +45,17 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+
+  return { promise, resolve, reject };
+}
+
 const advanceToNextTick = async (context: TestContext) => {
   context.mock.timers.runAll();
   await sleep(0);
@@ -609,6 +620,205 @@ describe('ResultFlow', () => {
       deepEqual(await first.run(), N.ok(1));
       deepEqual(await second.run(), N.ok(2));
       deepEqual(await settled.run(), N.ok([1, 2]));
+      deepEqual(flows, [first, second]);
+    });
+  });
+
+  describe('race', () => {
+    it('should not execute any flow before .run() is called', () => {
+      const first = mock.fn();
+      const second = mock.fn();
+
+      ResultFlow.race([
+        ResultFlow.of<number, never>(async () => {
+          first();
+          return 1;
+        }),
+        ResultFlow.of<number, never>(async () => {
+          second();
+          return 2;
+        }),
+      ]);
+
+      deepEqual(first.mock.callCount(), 0);
+      deepEqual(second.mock.callCount(), 0);
+    });
+
+    it('should start all flows when the returned flow is run', async () => {
+      const first = createDeferred<number>();
+      const second = createDeferred<number>();
+      const started = mock.fn();
+
+      const resultPromise = ResultFlow.race([
+        ResultFlow.of<number, never>(async () => {
+          started('first');
+          return first.promise;
+        }),
+        ResultFlow.of<number, never>(async () => {
+          started('second');
+          return second.promise;
+        }),
+      ]).run();
+
+      deepEqual(started.mock.calls.map((call) => call.arguments[0]), ['first', 'second']);
+
+      first.resolve(1);
+      deepEqual(await resultPromise, N.ok(1));
+      second.resolve(2);
+    });
+
+    it('should return the first successful result when an Ok settles first', async () => {
+      const slow = createDeferred<number>();
+      const fast = createDeferred<string>();
+
+      const resultPromise = ResultFlow.race([
+        ResultFlow.of<number, 'slow-error'>(async () => slow.promise),
+        ResultFlow.of<string, 'fast-error'>(async () => fast.promise),
+      ]).run();
+
+      fast.resolve('fast');
+
+      deepEqual(await resultPromise, N.ok('fast'));
+      slow.resolve(1);
+    });
+
+    it('should return the first failure when an Err settles first', async () => {
+      const slow = createDeferred<number>();
+      const fast = createDeferred<never>();
+
+      const resultPromise = ResultFlow.race([
+        ResultFlow.of<number, 'slow-error'>(async () => slow.promise),
+        ResultFlow.of<number, 'fast-error'>(async ({ fail }) => {
+          await fast.promise;
+          return fail('fast-error');
+        }),
+      ]).run();
+
+      fast.resolve(undefined as never);
+
+      deepEqual(await resultPromise, N.err('fast-error'));
+      slow.resolve(1);
+    });
+
+    it('should pass context to every input flow', async () => {
+      const first = mock.fn();
+      const second = mock.fn();
+
+      const result = await ResultFlow.race([
+        ResultFlow.of<number, never, Context>(async (_helpers, extras) => {
+          first(extras);
+          return 1;
+        }),
+        ResultFlow.of<number, never, Context>(async (_helpers, extras) => {
+          second(extras);
+          return 2;
+        }),
+      ]).run({ context });
+
+      deepEqual(result, N.ok(1));
+      deepEqual(first.mock.calls[0]?.arguments, [{ context }]);
+      deepEqual(second.mock.calls[0]?.arguments, [{ context }]);
+    });
+
+    it('should reject with a clear error for an empty array', async () => {
+      await rejects(
+        () => ResultFlow.race([]).run(),
+        /ResultFlow\.race requires at least one flow/,
+      );
+    });
+
+    it('should reject when the first settled input flow throws or rejects', async () => {
+      const pending = createDeferred<number>();
+
+      await rejects(
+        () => ResultFlow.race([
+          ResultFlow.of<number, never>(async () => pending.promise),
+          ResultFlow.of<number, never>(async () => {
+            throw new Error('flow threw');
+          }),
+        ]).run(),
+        /flow threw/,
+      );
+
+      pending.resolve(1);
+
+      const rejected = createDeferred<number>();
+      const stillPending = createDeferred<number>();
+
+      const resultPromise = ResultFlow.race([
+        ResultFlow.of<number, never>(async () => rejected.promise),
+        ResultFlow.of<number, never>(async () => stillPending.promise),
+      ]).run();
+
+      rejected.reject(new Error('flow rejected'));
+
+      await rejects(() => resultPromise, /flow rejected/);
+      stillPending.resolve(1);
+    });
+
+    it('should ignore later results after the first flow settles', async () => {
+      const first = createDeferred<string>();
+      const later = createDeferred<string>();
+
+      const resultPromise = ResultFlow.race([
+        ResultFlow.of<string, never>(async () => first.promise),
+        ResultFlow.of<string, never>(async () => later.promise),
+      ]).run();
+
+      first.resolve('winner');
+      const result = await resultPromise;
+
+      later.reject(new Error('too late'));
+      await sleep(0);
+
+      deepEqual(result, N.ok('winner'));
+    });
+
+    it('should preserve success and error union types', async () => {
+      const flow = ResultFlow.race([
+        ResultFlow.from<1, { reason: 'first' }>(N.ok(1 as const)),
+        ResultFlow.from<'two', { reason: 'second' }>(N.ok('two' as const)),
+      ] as const);
+      const typedFlow: ResultFlow<
+        1 | 'two',
+        { reason: 'first' } | { reason: 'second' }
+      > = flow;
+
+      const result = await typedFlow.run();
+
+      deepEqual(result, N.ok(1));
+    });
+
+    it('should require combined context when input flows have context', async () => {
+      type FirstContext = { correlationId: string };
+      type SecondContext = { userId: string };
+      const flow = ResultFlow.race([
+        ResultFlow.of<number, never, FirstContext>(async (_helpers, { context }) => context.correlationId.length),
+        ResultFlow.of<string, never, SecondContext>(async (_helpers, { context }) => context.userId),
+      ] as const);
+      const typedFlow: ResultFlow<
+        number | string,
+        never,
+        FirstContext & SecondContext
+      > = flow;
+
+      const result = await typedFlow.run({
+        context: { correlationId: 'test-correlation-id', userId: 'test-user-id' },
+      });
+
+      deepEqual(result, N.ok(19));
+    });
+
+    it('should be immutable', async () => {
+      const first = ResultFlow.from(N.ok(1));
+      const second = ResultFlow.from(N.ok(2));
+      const flows = Object.freeze([first, second] as const);
+      const raced = ResultFlow.race(flows);
+
+      deepEqual(flows, [first, second]);
+      deepEqual(await first.run(), N.ok(1));
+      deepEqual(await second.run(), N.ok(2));
+      deepEqual(await raced.run(), N.ok(1));
       deepEqual(flows, [first, second]);
     });
   });

@@ -23,6 +23,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
   - [Run Side Effects After Any Result](#run-side-effects-after-any-result)
   - [Use Generator Syntax](#use-generator-syntax)
   - [Combine Independent Flows](#combine-independent-flows)
+  - [Race Concurrent Flows](#race-concurrent-flows)
   - [Retry Transient Failures](#retry-transient-failures)
   - [Fail On Timeout](#fail-on-timeout)
   - [Run A Flow Periodically](#run-a-flow-periodically)
@@ -33,6 +34,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
   - [`ResultFlow.isResultFlow`](#resultflowisresultflow)
   - [`ResultFlow.gen`](#resultflowgen)
   - [`ResultFlow.allSettled`](#resultflowallsettled)
+  - [`ResultFlow.race`](#resultflowrace)
   - [`run`](#run)
   - [`map`](#map)
   - [`ensure`](#ensure)
@@ -414,6 +416,25 @@ const result = await ResultFlow
 // Err('quota-exceeded')
 ```
 
+### Race Concurrent Flows
+
+Use `ResultFlow.race` when several flows can answer the same question and you want the first settled `Result`.
+
+```ts
+const result = await ResultFlow
+  .race([
+    ResultFlow.from(() => readFromCache('user-1')),
+    ResultFlow.from(() => readFromReplica('user-1')),
+  ] as const)
+  .run();
+
+// Ok(user) or Err(error), whichever settles first.
+```
+
+The race is lazy. None of the input flows runs until the returned flow is run. When it runs, all input flows start concurrently and receive the same context.
+
+The first settled `Result` wins, whether it is `Ok` or `Err`. If the first settled input flow throws or rejects instead of returning a `Result`, the returned flow's `run()` rejects with that exception.
+
 ### Retry Transient Failures
 
 Use `retryPolicy` around the part of the flow that should be retried.
@@ -697,6 +718,43 @@ await flow.run({ context: { requestId: 'req-123' } });
 ```
 
 An empty input array succeeds with `Ok([])`.
+
+### `ResultFlow.race`
+
+Combines multiple `ResultFlow`s into one lazy flow. The returned flow starts every input flow concurrently and returns the first settled `Result`, whether it is `Ok` or `Err`.
+
+```ts
+ResultFlow.race(flows): ResultFlow<Successes, Errors, Context>
+```
+
+Example:
+
+```ts
+const flow = ResultFlow.race([
+  ResultFlow.from(() => fetchPrimaryUser()),
+  ResultFlow.from(() => fetchReplicaUser()),
+] as const);
+
+await flow.run(); // The first settled Ok or Err wins.
+```
+
+Success types are unioned, error types are unioned, and context types are combined so the returned flow requires the context needed by every input flow.
+
+```ts
+type Context = { requestId: string };
+
+const flow = ResultFlow.race([
+  ResultFlow.of<User, 'cache-miss', Context>(async (_helpers, { context }) => {
+    return readCache(context.requestId);
+  }),
+  ResultFlow.from<User, 'not-found'>(() => fetchUser()),
+] as const);
+
+// ResultFlow<User, 'cache-miss' | 'not-found', Context>
+await flow.run({ context: { requestId: 'req-123' } });
+```
+
+An empty input array rejects with `Error('ResultFlow.race requires at least one flow')`. A race over no flows would otherwise never settle.
 
 ### `run`
 

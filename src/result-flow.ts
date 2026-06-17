@@ -34,18 +34,19 @@ type RunParams<C extends BaseContext> =
 type FlowSuccess<F> = F extends ResultFlow<infer A, any, any> ? A : never;
 type FlowError<F> = F extends ResultFlow<any, infer E, any> ? E : never;
 type FlowContext<F> = F extends ResultFlow<any, any, infer C> ? C : never;
+type FlowSuccesses<Flows extends readonly ResultFlow<any, any, any>[]> = FlowSuccess<Flows[number]>;
+type FlowErrors<Flows extends readonly ResultFlow<any, any, any>[]> = FlowError<Flows[number]>;
 type NormalizeContext<C> = IsAny<C> extends true
   ? DefaultContext
   : C extends BaseContext
     ? C
     : DefaultContext;
-type AllSettledValues<Flows extends readonly ResultFlow<any, any, any>[]> = {
-  [K in keyof Flows]: FlowSuccess<Flows[K]>;
-};
-type AllSettledError<Flows extends readonly ResultFlow<any, any, any>[]> = FlowError<Flows[number]>;
-type AllSettledContext<Flows extends readonly ResultFlow<any, any, any>[]> = NormalizeContext<
+type FlowContexts<Flows extends readonly ResultFlow<any, any, any>[]> = NormalizeContext<
   UnionToIntersection<FlowContext<Flows[number]>>
 >;
+type FlowValues<Flows extends readonly ResultFlow<any, any, any>[]> = {
+  [K in keyof Flows]: FlowSuccess<Flows[K]>;
+};
 
 export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
   private constructor(private runPromise: (helpers: ResultFlowHelpers<E>, extras: Extras<C>) => Promise<A>) {}
@@ -107,27 +108,53 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
   static allSettled<const Flows extends readonly ResultFlow<any, any, any>[]>(
     flows: Flows,
   ): ResultFlow<
-    AllSettledValues<Flows>,
-    AllSettledError<Flows>,
-    AllSettledContext<Flows>
+    FlowValues<Flows>,
+    FlowErrors<Flows>,
+    FlowContexts<Flows>
   > {
     return ResultFlow.of<
-      AllSettledValues<Flows>,
-      AllSettledError<Flows>,
-      AllSettledContext<Flows>
+      FlowValues<Flows>,
+      FlowErrors<Flows>,
+      FlowContexts<Flows>
     >(async ({ tryTo }, extras) => {
       const values: unknown[] = [];
       const flowsToRun = flows as readonly ResultFlow<
         unknown,
-        AllSettledError<Flows>,
-        AllSettledContext<Flows>
+        FlowErrors<Flows>,
+        FlowContexts<Flows>
       >[];
 
       for (const flow of flowsToRun) {
         values.push(await tryTo(flow.run(extras)));
       }
 
-      return values as AllSettledValues<Flows>;
+      return values as FlowValues<Flows>;
+    });
+  }
+
+  static race<const Flows extends readonly ResultFlow<any, any, any>[]>(
+    flows: Flows,
+  ): ResultFlow<
+    FlowSuccesses<Flows>,
+    FlowErrors<Flows>,
+    FlowContexts<Flows>
+  > {
+    return ResultFlow.of<
+      FlowSuccesses<Flows>,
+      FlowErrors<Flows>,
+      FlowContexts<Flows>
+    >(async ({ tryTo }, extras) => {
+      if (flows.length === 0) {
+        throw new Error('ResultFlow.race requires at least one flow');
+      }
+
+      const flowsToRun = flows as readonly ResultFlow<
+        FlowSuccesses<Flows>,
+        FlowErrors<Flows>,
+        FlowContexts<Flows>
+      >[];
+
+      return tryTo(Promise.race(flowsToRun.map((flow) => flow.run(extras))));
     });
   }
 
