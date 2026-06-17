@@ -9,6 +9,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
 - [Why ResultFlow](#why-resultflow)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [API At A Glance](#api-at-a-glance)
 - [Core Concepts](#core-concepts)
   - [Type Parameters](#type-parameters)
   - [Lazy And Immutable](#lazy-and-immutable)
@@ -141,6 +142,29 @@ Both versions return the same type:
 ```ts
 // Promise<Result<User, UserError>>
 ```
+
+## API At A Glance
+
+`ResultFlow` methods fall into a few small groups. If you know what kind of operation you want, this is the quickest way to find the right method.
+
+| Category | Methods | Use When |
+| --- | --- | --- |
+| Create flows | `of`, `from`, `lift`, `gen` | You want to build a lazy flow from `Result`, `ResultAsync`, `Promise<Result>`, or generator syntax. |
+| Run flows | `run` | You want to execute the lazy workflow and get a `Promise<Result<A, E>>`. |
+| Transform values | `map`, `mapError` | You want to change the success value or error value without changing the control flow. |
+| Compose fallible work | `chain`, `orElse` | You want to continue with another operation that can itself fail. |
+| Observe results | `tap`, `tapError`, `finally`, `tapBoth` | You want side effects such as logging, metrics, or cleanup while preserving the original result. |
+| Validate success values | `ensure` | You want to keep a success value only if it passes a predicate. |
+| Recover from failures | `recover` | You want to turn a failure into an infallible fallback success value. |
+| Control execution | `retryPolicy`, `timeout`, `runPeriodically` | You want retries, time limits, or repeated execution around the same lazy flow. |
+| Coordinate flows | `allSettled`, `race`, `firstOk` | You want to combine multiple lazy flows. |
+
+Aliases:
+
+- `lift` is an alias for `from`.
+- `tap` is the success-side observer. `ifSuccess` is kept as the more explicit name.
+- `tapError` is the failure-side observer. `ifFailure` is kept as the more explicit name.
+- `tapBoth` is an alias for `finally`.
 
 ## Core Concepts
 
