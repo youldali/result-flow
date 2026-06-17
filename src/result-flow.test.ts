@@ -2353,6 +2353,388 @@ describe('ResultFlow', () => {
     });
   });
 
+  describe('repeatUntil', () => {
+    it('should return the first Ok(value) immediately when predicate returns true', async () => {
+      const action = mock.fn(() => N.ok(10));
+      const predicate = mock.fn(() => true);
+      const beforeRepeat = mock.fn();
+
+      const result = await ResultFlow.from(action)
+        .repeatUntil({
+          predicate,
+          onExhausted: () => 'exhausted' as const,
+          beforeRepeat,
+          maxRepeats: 3,
+        })
+        .run();
+
+      deepEqual(result, N.ok(10));
+      deepEqual(action.mock.callCount(), 1);
+      deepEqual(predicate.mock.callCount(), 1);
+      deepEqual(beforeRepeat.mock.callCount(), 0);
+    });
+
+    it('should repeat when predicate returns false', async () => {
+      const action = mock.fn(() => N.ok('pending' as const));
+
+      const result = await ResultFlow.from(action)
+        .repeatUntil({
+          predicate: () => false,
+          onExhausted: (lastValue) => ({ reason: 'not-ready' as const, lastValue }),
+          maxRepeats: 2,
+        })
+        .run();
+
+      deepEqual(action.mock.callCount(), 3);
+      deepEqual(result, N.err({ reason: 'not-ready', lastValue: 'pending' }));
+    });
+
+    it('should return a later Ok(value) when predicate eventually returns true', async () => {
+      const values = ['pending', 'pending', 'done'] as const;
+      let index = 0;
+      const action = mock.fn(() => N.ok(values[index++]));
+
+      const result = await ResultFlow.from(action)
+        .repeatUntil({
+          predicate: (value) => value === 'done',
+          onExhausted: () => 'exhausted' as const,
+          maxRepeats: 3,
+        })
+        .run();
+
+      deepEqual(result, N.ok('done'));
+      deepEqual(action.mock.callCount(), 3);
+    });
+
+    it('should return the original Err(error) immediately and not repeat', async () => {
+      const action = mock.fn(() => N.err('original-error' as const));
+      const predicate = mock.fn(() => false);
+      const onExhausted = mock.fn(() => 'exhausted' as const);
+      const beforeRepeat = mock.fn();
+
+      const result = await ResultFlow.from(action)
+        .repeatUntil({
+          predicate,
+          onExhausted,
+          beforeRepeat,
+          maxRepeats: 3,
+        })
+        .run();
+
+      deepEqual(result, N.err('original-error'));
+      deepEqual(action.mock.callCount(), 1);
+      deepEqual(predicate.mock.callCount(), 0);
+      deepEqual(beforeRepeat.mock.callCount(), 0);
+      deepEqual(onExhausted.mock.callCount(), 0);
+    });
+
+    it('should call onExhausted(lastValue, extras) and return its error when repeats are exhausted', async () => {
+      let attempt = 0;
+      const onExhausted: Mock<(lastValue: string, extras: { context: Record<never, never> }) => { reason: 'not-ready'; lastValue: string }> = mock.fn(
+        (lastValue) => ({ reason: 'not-ready', lastValue }),
+      );
+
+      const result = await ResultFlow.from<string, never>(() => {
+        attempt += 1;
+        return N.ok(attempt === 1 ? 'first' : 'last');
+      })
+        .repeatUntil({
+          predicate: () => false,
+          onExhausted,
+          maxRepeats: 1,
+        })
+        .run();
+
+      deepEqual(result, N.err({ reason: 'not-ready', lastValue: 'last' }));
+      deepEqual(onExhausted.mock.calls[0]?.arguments[0], 'last');
+      deepEqual(onExhausted.mock.calls[0]?.arguments[1], { context: {} });
+    });
+
+    it('should support async predicate', async () => {
+      const result = await ResultFlow.from(N.ok('done'))
+        .repeatUntil({
+          predicate: async (value) => value === 'done',
+          onExhausted: () => 'exhausted' as const,
+        })
+        .run();
+
+      deepEqual(result, N.ok('done'));
+    });
+
+    it('should support async beforeRepeat', async () => {
+      const events: string[] = [];
+      let attempt = 0;
+
+      const result = await ResultFlow.from(() => {
+        attempt += 1;
+        events.push(`run-${attempt}`);
+        return N.ok(attempt);
+      })
+        .repeatUntil({
+          predicate: (value) => value === 2,
+          beforeRepeat: async (value, repeatNumber) => {
+            await sleep(0);
+            events.push(`before-${repeatNumber}-${value}`);
+          },
+          onExhausted: () => 'exhausted' as const,
+        })
+        .run();
+
+      deepEqual(result, N.ok(2));
+      deepEqual(events, ['run-1', 'before-1-1', 'run-2']);
+    });
+
+    it('should support async onExhausted', async () => {
+      const result = await ResultFlow.from(N.ok('pending'))
+        .repeatUntil({
+          predicate: () => false,
+          onExhausted: async (lastValue) => ({ reason: 'not-ready' as const, lastValue }),
+          maxRepeats: 0,
+        })
+        .run();
+
+      deepEqual(result, N.err({ reason: 'not-ready', lastValue: 'pending' }));
+    });
+
+    it('should call beforeRepeat before each repeat with repeat numbers starting at 1', async () => {
+      const beforeRepeat = mock.fn();
+
+      await ResultFlow.from(N.ok('pending'))
+        .repeatUntil({
+          predicate: () => false,
+          beforeRepeat,
+          onExhausted: () => 'exhausted' as const,
+          maxRepeats: 3,
+        })
+        .run();
+
+      deepEqual(beforeRepeat.mock.callCount(), 3);
+      deepEqual(beforeRepeat.mock.calls.map((call) => call.arguments[1]), [1, 2, 3]);
+    });
+
+    it('should use the immediate delay strategy by default', async (context) => {
+      const setTimeoutMock = context.mock.method(globalThis, 'setTimeout', (callback: () => void) => {
+        callback();
+        return 0 as unknown as NodeJS.Timeout;
+      });
+
+      const result = await ResultFlow.from(N.ok('pending'))
+        .repeatUntil({
+          predicate: () => false,
+          onExhausted: () => 'exhausted' as const,
+          maxRepeats: 2,
+        })
+        .run();
+
+      deepEqual(result, N.err('exhausted'));
+      deepEqual(setTimeoutMock.mock.callCount(), 0);
+    });
+
+    it('should wait according to exponentialBackoff delay strategy when provided', async (context) => {
+      const setTimeoutMock = context.mock.method(globalThis, 'setTimeout', (callback: () => void) => {
+        callback();
+        return 0 as unknown as NodeJS.Timeout;
+      });
+      let attempt = 0;
+
+      const result = await ResultFlow.from(() => {
+        attempt += 1;
+        return N.ok(attempt);
+      })
+        .repeatUntil({
+          predicate: (value) => value === 3,
+          onExhausted: () => 'exhausted' as const,
+          maxRepeats: 2,
+          delayStrategy: { type: 'exponentialBackoff', baseDelayMs: 100 },
+        })
+        .run();
+
+      deepEqual(result, N.ok(3));
+      deepEqual(setTimeoutMock.mock.callCount(), 2);
+      deepEqual(setTimeoutMock.mock.calls[0]?.arguments[1], 100);
+      deepEqual(setTimeoutMock.mock.calls[1]?.arguments[1], 200);
+    });
+
+    it('should run only once when maxRepeats is 0', async () => {
+      const action = mock.fn(() => N.ok('pending' as const));
+
+      const result = await ResultFlow.from(action)
+        .repeatUntil({
+          predicate: () => false,
+          onExhausted: () => 'exhausted' as const,
+          maxRepeats: 0,
+        })
+        .run();
+
+      deepEqual(action.mock.callCount(), 1);
+      deepEqual(result, N.err('exhausted'));
+    });
+
+    it('should repeat once by default for two total attempts', async () => {
+      const action = mock.fn(() => N.ok('pending' as const));
+
+      const result = await ResultFlow.from(action)
+        .repeatUntil({
+          predicate: () => false,
+          onExhausted: () => 'exhausted' as const,
+        })
+        .run();
+
+      deepEqual(action.mock.callCount(), 2);
+      deepEqual(result, N.err('exhausted'));
+    });
+
+    it('should pass context to predicate, beforeRepeat, and onExhausted', async () => {
+      const predicate: Mock<(value: number, extras: { context: Context }) => boolean> = mock.fn(() => false);
+      const beforeRepeat: Mock<(value: number, repeatNumber: number, extras: { context: Context }) => void> = mock.fn();
+      const onExhausted: Mock<(lastValue: number, extras: { context: Context }) => 'exhausted'> = mock.fn(() => 'exhausted' as const);
+
+      await ResultFlow.from<number, never, Context>(N.ok(1))
+        .repeatUntil({
+          predicate,
+          beforeRepeat,
+          onExhausted,
+          maxRepeats: 1,
+        })
+        .run({ context });
+
+      deepEqual(predicate.mock.calls[0]?.arguments[1], { context });
+      deepEqual(beforeRepeat.mock.calls[0]?.arguments[2], { context });
+      deepEqual(onExhausted.mock.calls[0]?.arguments[1], { context });
+    });
+
+    it('should be lazy and not execute the original flow before .run()', () => {
+      const action = mock.fn(() => N.ok('done' as const));
+
+      ResultFlow.from(action)
+        .repeatUntil({
+          predicate: () => true,
+          onExhausted: () => 'exhausted' as const,
+        });
+
+      deepEqual(action.mock.callCount(), 0);
+    });
+
+    it('should be immutable and not mutate the original flow', async () => {
+      const base = ResultFlow.from(N.ok(1));
+      const repeated = base.repeatUntil({
+        predicate: () => false,
+        onExhausted: () => 'exhausted' as const,
+        maxRepeats: 0,
+      });
+
+      deepEqual(await base.run(), N.ok(1));
+      deepEqual(await repeated.run(), N.err('exhausted'));
+      deepEqual(await base.run(), N.ok(1));
+    });
+
+    it('should reject when the original flow throws or rejects', async () => {
+      await rejects(
+        () => ResultFlow.of<number, never>(async () => {
+          throw new Error('flow threw');
+        })
+          .repeatUntil({
+            predicate: () => true,
+            onExhausted: () => 'exhausted' as const,
+          })
+          .run(),
+        /flow threw/,
+      );
+
+      await rejects(
+        () => ResultFlow.from<number, never>(() => Promise.reject(new Error('flow rejected')))
+          .repeatUntil({
+            predicate: () => true,
+            onExhausted: () => 'exhausted' as const,
+          })
+          .run(),
+        /flow rejected/,
+      );
+    });
+
+    it('should reject when predicate throws or rejects', async () => {
+      await rejects(
+        () => ResultFlow.from(N.ok(1))
+          .repeatUntil({
+            predicate: () => {
+              throw new Error('predicate failed');
+            },
+            onExhausted: () => 'exhausted' as const,
+          })
+          .run(),
+        /predicate failed/,
+      );
+
+      await rejects(
+        () => ResultFlow.from(N.ok(1))
+          .repeatUntil({
+            predicate: async () => {
+              throw new Error('predicate rejected');
+            },
+            onExhausted: () => 'exhausted' as const,
+          })
+          .run(),
+        /predicate rejected/,
+      );
+    });
+
+    it('should reject when beforeRepeat throws or rejects', async () => {
+      await rejects(
+        () => ResultFlow.from(N.ok(1))
+          .repeatUntil({
+            predicate: () => false,
+            beforeRepeat: () => {
+              throw new Error('beforeRepeat failed');
+            },
+            onExhausted: () => 'exhausted' as const,
+          })
+          .run(),
+        /beforeRepeat failed/,
+      );
+
+      await rejects(
+        () => ResultFlow.from(N.ok(1))
+          .repeatUntil({
+            predicate: () => false,
+            beforeRepeat: async () => {
+              throw new Error('beforeRepeat rejected');
+            },
+            onExhausted: () => 'exhausted' as const,
+          })
+          .run(),
+        /beforeRepeat rejected/,
+      );
+    });
+
+    it('should reject when onExhausted throws or rejects', async () => {
+      await rejects(
+        () => ResultFlow.from(N.ok(1))
+          .repeatUntil({
+            predicate: () => false,
+            onExhausted: () => {
+              throw new Error('onExhausted failed');
+            },
+            maxRepeats: 0,
+          })
+          .run(),
+        /onExhausted failed/,
+      );
+
+      await rejects(
+        () => ResultFlow.from(N.ok(1))
+          .repeatUntil({
+            predicate: () => false,
+            onExhausted: async () => {
+              throw new Error('onExhausted rejected');
+            },
+            maxRepeats: 0,
+          })
+          .run(),
+        /onExhausted rejected/,
+      );
+    });
+  });
+
   describe('timeout', () => {
     it('should return the original success when the flow completes before the timeout', async (context) => {
       context.mock.method(AbortSignal, 'timeout', () => new AbortController().signal);

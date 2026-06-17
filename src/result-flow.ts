@@ -405,6 +405,50 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     });
   }
 
+  repeatUntil<E2>({
+    predicate,
+    onExhausted,
+    maxRepeats = 1,
+    delayStrategy = { type: "immediate" },
+    beforeRepeat,
+  }: {
+    predicate: (value: A, extras: Extras<C>) => boolean | Promise<boolean>;
+    onExhausted: (lastValue: A, extras: Extras<C>) => E2 | Promise<E2>;
+    maxRepeats?: number;
+    delayStrategy?: DelayStrategy;
+    beforeRepeat?: (value: A, repeatNumber: number, extras: Extras<C>) => void | Promise<void>;
+  }): ResultFlow<A, E | E2, C> {
+    return ResultFlow.of<A, E | E2, C>(async ({ fail }, extras) => {
+      let repeatNumber = 0;
+
+      while (true) {
+        const result = await this.run(extras);
+
+        if (result.isErr()) {
+          return fail(result.error);
+        }
+
+        if (await predicate(result.value, extras)) {
+          return result.value;
+        }
+
+        if (repeatNumber >= maxRepeats) {
+          return fail(await onExhausted(result.value, extras));
+        }
+
+        repeatNumber += 1;
+        if (beforeRepeat) {
+          await beforeRepeat(result.value, repeatNumber, extras);
+        }
+
+        const delay = calculateDelay(delayStrategy, repeatNumber);
+        if (delay > 0) {
+          await wait(delay);
+        }
+      }
+    });
+  }
+
   timeout<E2>({
     ms,
     onTimeout,

@@ -2,7 +2,7 @@
 
 `ResultFlow` is built on top of `neverthrow`. Both libraries are meant to be used together: `neverthrow` gives you typed `Result` and `ResultAsync` values, and `ResultFlow` adds a thunk-driven layer for composing work that should not execute until you call `run()`.
 
-That lazy execution model makes it possible to extend `neverthrow` workflows with behavior such as retries, periodic execution, timeouts, and context passing. A flow stops on the first `Err`, returns that error from `run()`, and skips the remaining success path.
+That lazy execution model makes it possible to extend `neverthrow` workflows with behavior such as retries, polling, periodic execution, timeouts, and context passing. A flow stops on the first `Err`, returns that error from `run()`, and skips the remaining success path.
 
 ## Table Of Contents
 
@@ -28,6 +28,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
   - [Use The First Successful Flow](#use-the-first-successful-flow)
   - [Race Concurrent Flows](#race-concurrent-flows)
   - [Retry Transient Failures](#retry-transient-failures)
+  - [Poll Until A Success Value Is Ready](#poll-until-a-success-value-is-ready)
   - [Fail On Timeout](#fail-on-timeout)
   - [Run A Flow Periodically](#run-a-flow-periodically)
 - [API Reference](#api-reference)
@@ -54,6 +55,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
   - [`finally`](#finally)
   - [`tapBoth`](#tapboth)
   - [`retryPolicy`](#retrypolicy)
+  - [`repeatUntil`](#repeatuntil)
   - [`timeout`](#timeout)
   - [`runPeriodically`](#runperiodically)
 - [Helper Types](#helper-types)
@@ -92,7 +94,7 @@ const flow = ResultFlow.of<User, UserError>(async ({ tryTo }) => {
 const result = await flow.run();
 ```
 
-The success path stays linear. The failure path stays typed. The work does not start until `run()` is called, so capabilities like `retryPolicy`, `runPeriodically`, and context passing can be layered around the workflow before execution.
+The success path stays linear. The failure path stays typed. The work does not start until `run()` is called, so capabilities like `retryPolicy`, `repeatUntil`, `runPeriodically`, and context passing can be layered around the workflow before execution.
 
 ## Installation
 
@@ -157,7 +159,7 @@ Both versions return the same type:
 | Observe results | `tap`, `tapError`, `finally`, `tapBoth` | You want side effects such as logging, metrics, or cleanup while preserving the original result. |
 | Validate success values | `ensure` | You want to keep a success value only if it passes a predicate. |
 | Recover from failures | `recover` | You want to turn a failure into an infallible fallback success value. |
-| Control execution | `retryPolicy`, `timeout`, `runPeriodically` | You want retries, time limits, or repeated execution around the same lazy flow. |
+| Control execution | `retryPolicy`, `repeatUntil`, `timeout`, `runPeriodically` | You want retries, polling, time limits, or repeated execution around the same lazy flow. |
 | Coordinate flows | `all`, `allSettled`, `race`, `firstOk` | You want to combine multiple lazy flows. |
 
 Aliases:
@@ -548,6 +550,50 @@ const result = await ResultFlow
 ```
 
 `maxRetries` is the number of retries after the first attempt. With `maxRetries: 3`, the operation can run up to 4 times.
+
+### Poll Until A Success Value Is Ready
+
+Use `repeatUntil` when the flow succeeds, but the success value says the work is not ready yet.
+
+```ts
+type JobStatus =
+  | { id: string; status: 'queued' | 'running' }
+  | { id: string; status: 'done'; resultUrl: string };
+
+type JobError =
+  | { reason: 'not-found' }
+  | { reason: 'job-not-ready'; lastStatus: JobStatus['status'] };
+
+declare function getJobStatus(id: string): Promise<N.Result<JobStatus, { reason: 'not-found' }>>;
+
+const result = await ResultFlow
+  .from(() => getJobStatus('job-123'))
+  .repeatUntil({
+    predicate: (job) => job.status === 'done',
+    maxRepeats: 10,
+    delayStrategy: { type: 'exponentialBackoff', baseDelayMs: 250, maxDelayMs: 2000 },
+    beforeRepeat: (job, repeatNumber) => {
+      console.log(`Job ${job.id} is ${job.status}; repeat ${repeatNumber}`);
+    },
+    onExhausted: (job) => ({
+      reason: 'job-not-ready' as const,
+      lastStatus: job.status,
+    }),
+  })
+  .run();
+
+// Ok({ status: 'done', ... })
+// or Err({ reason: 'not-found' })
+// or Err({ reason: 'job-not-ready', lastStatus: 'queued' | 'running' })
+```
+
+`repeatUntil` only repeats successful `Ok(value)` results whose predicate returns `false`. If the wrapped flow returns `Err`, it stops immediately and returns that original error.
+
+Choose between the execution helpers by the signal you want to react to:
+
+- `retryPolicy` repeats when the wrapped flow returns `Err`.
+- `repeatUntil` repeats when the wrapped flow returns `Ok(value)` but the value is not ready yet.
+- `runPeriodically` starts an interval loop and does not return a `Result`; it is for ongoing background work such as health checks.
 
 ### Fail On Timeout
 
@@ -1300,6 +1346,60 @@ const result = await ResultFlow
 ```
 
 Only the flow before `retryPolicy` is retried. Steps appended after `retryPolicy` run once after the retry policy completes.
+
+### `repeatUntil`
+
+Repeats the previous flow when it returns `Ok(value)` and `predicate(value)` returns `false`.
+
+```ts
+flow.repeatUntil<E2>(params: {
+  predicate: (value: A, extras: { context: C; abortSignal?: AbortSignal }) => boolean | Promise<boolean>;
+  onExhausted: (lastValue: A, extras: { context: C; abortSignal?: AbortSignal }) => E2 | Promise<E2>;
+  maxRepeats?: number;
+  delayStrategy?: DelayStrategy;
+  beforeRepeat?: (
+    value: A,
+    repeatNumber: number,
+    extras: { context: C; abortSignal?: AbortSignal },
+  ) => void | Promise<void>;
+}): ResultFlow<A, E | E2, C>
+```
+
+Defaults:
+
+```ts
+{
+  maxRepeats: 1,
+  delayStrategy: { type: 'immediate' },
+}
+```
+
+Example:
+
+```ts
+const result = await ResultFlow
+  .from(() => getJobStatus('job-123'))
+  .repeatUntil({
+    predicate: (job) => job.status === 'done',
+    maxRepeats: 5,
+    delayStrategy: { type: 'exponentialBackoff', baseDelayMs: 500, maxDelayMs: 5000 },
+    beforeRepeat: (job, repeatNumber) => {
+      console.log(`Repeat ${repeatNumber}; current status is ${job.status}`);
+    },
+    onExhausted: (job) => ({ reason: 'job-not-ready' as const, lastStatus: job.status }),
+  })
+  .run();
+```
+
+The original flow always runs at least once. `maxRepeats` is the number of additional runs after the first attempt, so `maxRepeats: 0` runs once and `maxRepeats: 3` can run up to 4 total attempts.
+
+If the wrapped flow returns `Err`, `repeatUntil` stops immediately and returns that original error. If all repeats are exhausted, `onExhausted(lastValue, extras)` builds the returned `Err`.
+
+`beforeRepeat` runs before each additional attempt. Its `repeatNumber` starts at `1` for the first repeat after the first `Ok(value)` that did not satisfy the predicate. Delay is applied after `beforeRepeat` and before the next run.
+
+Only the flow before `repeatUntil` is repeated. Steps appended after `repeatUntil` run once after the repeat loop completes.
+
+`retryPolicy`, `repeatUntil`, and `runPeriodically` repeat for different reasons: `retryPolicy` repeats returned failures, `repeatUntil` repeats not-ready successes, and `runPeriodically` schedules ongoing interval execution rather than returning a single final `Result`.
 
 ### `timeout`
 
