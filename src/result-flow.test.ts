@@ -343,6 +343,177 @@ describe('ResultFlow', () => {
     });
   });
 
+  describe('match', () => {
+    it('calls ok handler and returns its value when the flow succeeds', async () => {
+      const result = await ResultFlow.from<number, string>(N.ok(10)).match({
+        ok: (value) => ({ status: 200, body: value }),
+        err: () => ({ status: 500, body: 0 }),
+      });
+
+      deepEqual(result, { status: 200, body: 10 });
+    });
+
+    it('does not call err handler when the flow succeeds', async () => {
+      const err = mock.fn();
+
+      await ResultFlow.from<number, string>(N.ok(10)).match({
+        ok: (value) => value,
+        err,
+      });
+
+      strictEqual(err.mock.callCount(), 0);
+    });
+
+    it('calls err handler and returns its value when the flow fails', async () => {
+      const result = await ResultFlow.from<number, string>(N.err('error')).match<{ status: number; body: unknown }>({
+        ok: () => ({ status: 200, body: 0 }),
+        err: (error) => ({ status: 400, body: error }),
+      });
+
+      deepEqual(result, { status: 400, body: 'error' });
+    });
+
+    it('does not call ok handler when the flow fails', async () => {
+      const ok = mock.fn();
+
+      await ResultFlow.from<number, string>(N.err('error')).match({
+        ok,
+        err: (error) => error,
+      });
+
+      strictEqual(ok.mock.callCount(), 0);
+    });
+
+    it('supports async ok handler', async () => {
+      const result = await ResultFlow.from<number, string>(N.ok(10)).match({
+        ok: async (value) => value + 5,
+        err: async () => 0,
+      });
+
+      strictEqual(result, 15);
+    });
+
+    it('supports async err handler', async () => {
+      const result = await ResultFlow.from<number, string>(N.err('error')).match({
+        ok: async () => 'ok',
+        err: async (error) => `handled:${error}`,
+      });
+
+      strictEqual(result, 'handled:error');
+    });
+
+    it('passes context to the selected handler', async () => {
+      type Context = { requestId: string };
+      const requestContext: Context = { requestId: 'req-123' };
+
+      const result = await ResultFlow.from<number, string, Context>(N.ok(10)).match({
+        ok: (_value, extras) => extras.context.requestId,
+        err: () => 'error',
+      }, { context: requestContext });
+
+      strictEqual(result, 'req-123');
+    });
+
+    it('passes abortSignal to the selected handler', async () => {
+      const abortController = new AbortController();
+
+      const result = await ResultFlow.from<number, string>(N.ok(10)).match({
+        ok: (_value, extras) => extras.abortSignal,
+        err: () => undefined,
+      }, { abortSignal: abortController.signal });
+
+      strictEqual(result, abortController.signal);
+    });
+
+    it('allows calling match with no context when the flow has no context type', async () => {
+      const result = await ResultFlow.from<number, string>(N.ok(10)).match({
+        ok: (value) => value,
+        err: () => 0,
+      });
+
+      strictEqual(result, 10);
+    });
+
+    it('requires and uses context when the flow has a context type', async () => {
+      type Context = { multiplier: number };
+      const flow = ResultFlow.from<number, string, Context>(N.ok(10));
+
+      if (false) {
+        // @ts-expect-error Context is required for context-aware flows.
+        void flow.match({
+          ok: (value) => value,
+          err: () => 0,
+        });
+      }
+
+      const result = await flow.match({
+        ok: (value, extras) => value * extras.context.multiplier,
+        err: () => 0,
+      }, { context: { multiplier: 3 } });
+
+      strictEqual(result, 30);
+    });
+
+    it('rejects when the underlying flow throws and does not call either handler', async () => {
+      const ok = mock.fn();
+      const err = mock.fn();
+      const resultFlow = ResultFlow.of<number, string>(async () => {
+        throw new Error('flow threw');
+      });
+
+      await rejects(() => resultFlow.match({ ok, err }), /flow threw/);
+      strictEqual(ok.mock.callCount(), 0);
+      strictEqual(err.mock.callCount(), 0);
+    });
+
+    it('rejects when the underlying flow rejects and does not call either handler', async () => {
+      const ok = mock.fn();
+      const err = mock.fn();
+      const resultFlow = ResultFlow.from<number, string>(() => Promise.reject(new Error('flow rejected')));
+
+      await rejects(() => resultFlow.match({ ok, err }), /flow rejected/);
+      strictEqual(ok.mock.callCount(), 0);
+      strictEqual(err.mock.callCount(), 0);
+    });
+
+    it('rejects when the selected handler throws', async () => {
+      await rejects(
+        () => ResultFlow.from<number, string>(N.ok(10)).match({
+          ok: () => {
+            throw new Error('handler threw');
+          },
+          err: () => 0,
+        }),
+        /handler threw/,
+      );
+    });
+
+    it('rejects when the selected handler rejects', async () => {
+      await rejects(
+        () => ResultFlow.from<number, string>(N.err('error')).match({
+          ok: () => 0,
+          err: async () => {
+            throw new Error('handler rejected');
+          },
+        }),
+        /handler rejected/,
+      );
+    });
+
+    it('does not mutate the original flow', async () => {
+      const base = ResultFlow.from<number, string>(N.ok(10));
+
+      const matched = await base.match({
+        ok: (value) => value * 2,
+        err: () => 0,
+      });
+      const originalResult = await base.run();
+
+      strictEqual(matched, 20);
+      deepEqual(originalResult, N.ok(10));
+    });
+  });
+
   describe('from', () => {
     it('should lift the Result<A, E> into a `ResultFlow`', async () => {
       const resultFlow = ResultFlow.from(N.ok(10));

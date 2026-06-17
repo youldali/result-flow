@@ -24,6 +24,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
   - [Fallback To Another Flow](#fallback-to-another-flow)
   - [Recover With An Infallible Value](#recover-with-an-infallible-value)
   - [Run Side Effects After Any Result](#run-side-effects-after-any-result)
+  - [Convert A Flow To A Response](#convert-a-flow-to-a-response)
   - [Use Generator Syntax](#use-generator-syntax)
   - [Combine Independent Flows](#combine-independent-flows)
   - [Use The First Successful Flow](#use-the-first-successful-flow)
@@ -43,6 +44,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
   - [`ResultFlow.firstOk`](#resultflowfirstok)
   - [`ResultFlow.race`](#resultflowrace)
   - [`run`](#run)
+  - [`match`](#match)
   - [`map`](#map)
   - [`ensure`](#ensure)
   - [`mapError`](#maperror)
@@ -154,7 +156,7 @@ Both versions return the same type:
 | Category | Methods | Use When |
 | --- | --- | --- |
 | Create flows | `of`, `from`, `lift`, `gen` | You want to build a lazy flow from `Result`, `ResultAsync`, `Promise<Result>`, or generator syntax. |
-| Run flows | `run` | You want to execute the lazy workflow and get a `Promise<Result<A, E>>`. |
+| Run flows | `run`, `match` | You want to execute the lazy workflow and get either a `Promise<Result<A, E>>` or a plain value produced from both cases. |
 | Transform values | `map`, `mapError` | You want to change the success value or error value without changing the control flow. |
 | Compose fallible work | `chain`, `orElse` | You want to continue with another operation that can itself fail. |
 | Observe results | `tap`, `tapError`, `finally`, `tapBoth` | You want side effects such as logging, metrics, or cleanup while preserving the original result. |
@@ -173,6 +175,22 @@ Aliases:
 ## Choosing Related Methods
 
 Some methods are intentionally close to each other. The difference is what signal they react to and whether they return one final `Result`.
+
+### Running Flows
+
+Both `run` and `match` execute the lazy flow immediately. Use `run` when the caller should keep working with a `Result`. Use `match` when you are at an application boundary and want to convert both cases into one plain value.
+
+| Method | Returns | Use When |
+| --- | --- | --- |
+| `run` | `Promise<Result<A, E>>` | You want the final `Ok` or `Err` and will decide what to do with it later. |
+| `match` | `Promise<B>` | You want to handle both `Ok` and `Err` now and return a plain value such as an HTTP response, CLI payload, or UI state. |
+
+In short:
+
+```text
+run   -> execute and keep the Result
+match -> execute and leave the Result world
+```
 
 ### Repeating Work
 
@@ -458,6 +476,31 @@ const result = await ResultFlow
 ```
 
 The effect runs for returned `Ok` and `Err` values. If the underlying flow throws or rejects instead of returning a `Result`, the effect is not called and `run()` rejects as usual.
+
+### Convert A Flow To A Response
+
+Use `match` at application boundaries when both success and failure should become a plain value, such as an HTTP response, message acknowledgement, CLI exit payload, or UI state.
+
+```ts
+type Context = { requestId: string };
+type Response = { status: number; body: unknown };
+type UserError = 'not-found' | 'invalid-email' | 'save-failed';
+
+declare function updateUserFlow(id: string): ResultFlow<User, UserError, Context>;
+
+const response = await updateUserFlow('user-1').match<Response>({
+  ok: (user, { context }) => ({
+    status: 200,
+    body: { requestId: context.requestId, user },
+  }),
+  err: (error, { context }) => ({
+    status: error === 'not-found' ? 404 : 400,
+    body: { requestId: context.requestId, error },
+  }),
+}, { context: { requestId: 'req-123' } });
+```
+
+`match` executes the flow immediately, just like `run`. Unlike chainable methods such as `map`, `chain`, or `recover`, it does not return a `ResultFlow`.
 
 ### Use Generator Syntax
 
@@ -1023,6 +1066,42 @@ const flow = ResultFlow.of<string, never, Context>(async (_helpers, { context })
 
 await flow.run({ context: { requestId: 'req-123' } }); // Ok('req-123')
 ```
+
+### `match`
+
+Executes the flow and converts the final `Result` into a plain value by handling both cases.
+
+```ts
+flow.match<B>(
+  handlers: {
+    ok: (value: A, extras: { context: C; abortSignal?: AbortSignal }) => B | Promise<B>;
+    err: (error: E, extras: { context: C; abortSignal?: AbortSignal }) => B | Promise<B>;
+  },
+): Promise<B>
+
+flow.match<B>(
+  handlers: {
+    ok: (value: A, extras: { context: C; abortSignal?: AbortSignal }) => B | Promise<B>;
+    err: (error: E, extras: { context: C; abortSignal?: AbortSignal }) => B | Promise<B>;
+  },
+  { context, abortSignal }: { context: C; abortSignal?: AbortSignal },
+): Promise<B>
+```
+
+The context argument is only needed when the flow declares a context type. If `abortSignal` is passed, the selected handler receives it in `extras`.
+
+Example:
+
+```ts
+const response = await ResultFlow
+  .from<User, 'not-found'>(() => findUser('user-1'))
+  .match({
+    ok: (user) => ({ status: 200, body: user }),
+    err: (error) => ({ status: 404, body: { error } }),
+  });
+```
+
+`match` is terminal: it executes the flow immediately and returns `Promise<B>`, not a `ResultFlow`. If the underlying flow throws or rejects instead of returning a `Result`, `match` rejects and does not call either handler. If the selected handler throws or rejects, `match` rejects with that exception.
 
 ### `map`
 

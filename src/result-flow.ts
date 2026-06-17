@@ -28,6 +28,8 @@ type DefaultContext = Record<never, never>;
 type BaseContext = Record<string, any>;
 type SubContext<C> = { [K in keyof C]?: C[K] };
 type PolymorphicResult<A, E, C extends BaseContext = DefaultContext> = ResultFlow<A, E, C> | Promise<Result<A, E>> | Result<A, E> | ResultAsync<A, E>;
+// RunParams is the public caller input. Extras is the normalized runtime shape
+// passed to flow callbacks, so context is always present there.
 type Extras<C extends BaseContext> = { context: C; abortSignal?: AbortSignal; };
 type RunParams<C extends BaseContext> =
   { abortSignal?: AbortSignal } & (keyof C extends never ? { context?: C } : { context: C });
@@ -55,6 +57,16 @@ type FlowResults<Flows extends readonly ResultFlow<any, any, any>[]> = {
 
 export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
   private constructor(private runPromise: (helpers: ResultFlowHelpers<E>, extras: Extras<C>) => Promise<A>) {}
+
+  private static buildExtras<C extends BaseContext>(
+    ...args: keyof C extends never
+      ? [] | [RunParams<C>]
+      : [RunParams<C>]
+  ): Extras<C> {
+    const [{ context = {} as C, abortSignal } = {} as RunParams<C>] = args;
+    return abortSignal ? { context, abortSignal } : { context };
+  }
+
   private helpers: ResultFlowHelpers<E> = {
     tryTo<A1, E2>(
       result: Result<A1, E2> | Promise<Result<A1, E2>>,
@@ -239,9 +251,31 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
       ? [] | [RunParams<C>]
       : [RunParams<C>]
   ): Promise<Result<A, E>> {
-    const [{ context = {} as C, abortSignal } = {} as RunParams<C>] = args;
-    const extras: Extras<C> = abortSignal ? { context, abortSignal } : { context };
+    const extras = ResultFlow.buildExtras<C>(...args);
 
+    return this.executeWithExtras(extras);
+  }
+
+  async match<B>(
+    handlers: {
+      ok: (value: A, extras: Extras<C>) => B | Promise<B>;
+      err: (error: E, extras: Extras<C>) => B | Promise<B>;
+    },
+    ...args: keyof C extends never
+      ? [] | [RunParams<C>]
+      : [RunParams<C>]
+  ): Promise<B> {
+    const extras = ResultFlow.buildExtras<C>(...args);
+    const result = await this.executeWithExtras(extras);
+
+    if (result.isOk()) {
+      return handlers.ok(result.value, extras);
+    }
+
+    return handlers.err(result.error, extras);
+  }
+
+  private async executeWithExtras(extras: Extras<C>): Promise<Result<A, E>> {
     try {
       return N.ok(await this.runPromise(this.helpers, extras));
     } catch (e: unknown) {
