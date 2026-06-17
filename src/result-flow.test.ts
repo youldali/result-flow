@@ -1428,6 +1428,155 @@ describe('ResultFlow', () => {
     });
   });
 
+  describe('mapBoth', () => {
+    it('maps the success value when the flow succeeds', async () => {
+      const result = await ResultFlow
+        .from<number, string>(N.ok(10))
+        .mapBoth({
+          ok: (value) => value + 5,
+          err: (error) => error.length,
+        })
+        .run();
+
+      deepEqual(result, N.ok(15));
+    });
+
+    it('does not call err handler when the flow succeeds', async () => {
+      const err = mock.fn((error: string) => error.length);
+
+      const result = await ResultFlow
+        .from<number, string>(N.ok(10))
+        .mapBoth({
+          ok: (value) => value + 5,
+          err,
+        })
+        .run();
+
+      deepEqual(result, N.ok(15));
+      strictEqual(err.mock.callCount(), 0);
+    });
+
+    it('maps the error value when the flow fails', async () => {
+      const result = await ResultFlow
+        .from<number, string>(N.err('error'))
+        .mapBoth({
+          ok: (value) => value + 5,
+          err: (error) => ({ code: error, retryable: false }),
+        })
+        .run();
+
+      deepEqual(result, N.err({ code: 'error', retryable: false }));
+    });
+
+    it('does not call ok handler when the flow fails', async () => {
+      const ok = mock.fn((value: number) => value + 5);
+
+      const result = await ResultFlow
+        .from<number, string>(N.err('error'))
+        .mapBoth({
+          ok,
+          err: (error) => ({ code: error }),
+        })
+        .run();
+
+      deepEqual(result, N.err({ code: 'error' }));
+      strictEqual(ok.mock.callCount(), 0);
+    });
+
+    it('passes context to the selected handler', async () => {
+      const ok = mock.fn((value: number, extras: { context: Context }) => {
+        return `${extras.context.userId}:${value}`;
+      });
+      const err = mock.fn((error: string, extras: { context: Context }) => {
+        return `${extras.context.correlationId}:${error}`;
+      });
+
+      const successResult = await ResultFlow
+        .from<number, string, Context>(N.ok(10))
+        .mapBoth({ ok, err })
+        .run({ context });
+      const errorResult = await ResultFlow
+        .from<number, string, Context>(N.err('error'))
+        .mapBoth({ ok, err })
+        .run({ context });
+
+      deepEqual(successResult, N.ok('test-user-id:10'));
+      deepEqual(errorResult, N.err('test-correlation-id:error'));
+      deepEqual(ok.mock.calls[0]?.arguments, [10, { context }]);
+      deepEqual(err.mock.calls[0]?.arguments, ['error', { context }]);
+    });
+
+    it('passes abortSignal to the selected handler', async () => {
+      const abortController = new AbortController();
+
+      const result = await ResultFlow
+        .from<number, string>(N.ok(10))
+        .mapBoth({
+          ok: (_value, extras) => extras.abortSignal,
+          err: () => undefined,
+        })
+        .run({ abortSignal: abortController.signal });
+
+      strictEqual(result._unsafeUnwrap(), abortController.signal);
+    });
+
+    it('is immutable', async () => {
+      const original = ResultFlow.from<number, string>(N.ok(10));
+      const mapped = original.mapBoth({
+        ok: (value) => value + 5,
+        err: (error) => error.length,
+      });
+
+      deepEqual(await original.run(), N.ok(10));
+      deepEqual(await mapped.run(), N.ok(15));
+    });
+
+    it('rejects when the underlying flow throws', async () => {
+      const ok = mock.fn();
+      const err = mock.fn();
+      const resultFlow = ResultFlow.of<number, string>(async () => {
+        throw new Error('underlying failed');
+      }).mapBoth({ ok, err });
+
+      await rejects(() => resultFlow.run(), /underlying failed/);
+      strictEqual(ok.mock.callCount(), 0);
+      strictEqual(err.mock.callCount(), 0);
+    });
+
+    it('rejects when the selected success handler throws', async () => {
+      const resultFlow = ResultFlow.from<number, string>(N.ok(10)).mapBoth({
+        ok: () => {
+          throw new Error('ok failed');
+        },
+        err: (error) => error.length,
+      });
+
+      await rejects(() => resultFlow.run(), /ok failed/);
+    });
+
+    it('rejects when the selected error handler throws', async () => {
+      const resultFlow = ResultFlow.from<number, string>(N.err('error')).mapBoth({
+        ok: (value) => value + 5,
+        err: () => {
+          throw new Error('err failed');
+        },
+      });
+
+      await rejects(() => resultFlow.run(), /err failed/);
+    });
+
+    it('returns a flow with mapped success and error types', async () => {
+      const flow: ResultFlow<string, { code: string }> = ResultFlow
+        .from<number, string>(N.ok(10))
+        .mapBoth({
+          ok: (value) => value.toString(),
+          err: (error) => ({ code: error }),
+        });
+
+      deepEqual(await flow.run(), N.ok('10'));
+    });
+  });
+
   describe('ensure', () => {
     it('should return the original success value when the predicate returns true', async () => {
       const result = await ResultFlow

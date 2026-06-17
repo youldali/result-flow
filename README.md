@@ -20,6 +20,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
   - [Chain Operations And Stop On First Failure](#chain-operations-and-stop-on-first-failure)
   - [Pipe Values With Chain](#pipe-values-with-chain)
   - [Validate A Success Value](#validate-a-success-value)
+  - [Normalize Success And Error Values Together](#normalize-success-and-error-values-together)
   - [Handle One Failure Manually](#handle-one-failure-manually)
   - [Fallback To Another Flow](#fallback-to-another-flow)
   - [Recover With An Infallible Value](#recover-with-an-infallible-value)
@@ -46,6 +47,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
   - [`run`](#run)
   - [`match`](#match)
   - [`map`](#map)
+  - [`mapBoth`](#mapboth)
   - [`ensure`](#ensure)
   - [`mapError`](#maperror)
   - [`chain`](#chain)
@@ -157,7 +159,7 @@ Both versions return the same type:
 | --- | --- | --- |
 | Create flows | `of`, `from`, `lift`, `gen` | You want to build a lazy flow from `Result`, `ResultAsync`, `Promise<Result>`, or generator syntax. |
 | Run flows | `run`, `match` | You want to execute the lazy workflow and get either a `Promise<Result<A, E>>` or a plain value produced from both cases. |
-| Transform values | `map`, `mapError` | You want to change the success value or error value without changing the control flow. |
+| Transform values | `map`, `mapError`, `mapBoth` | You want to change the success value, error value, or both without changing the control flow. |
 | Compose fallible work | `chain`, `orElse` | You want to continue with another operation that can itself fail. |
 | Observe results | `tap`, `tapError`, `finally`, `tapBoth` | You want side effects such as logging, metrics, or cleanup while preserving the original result. |
 | Validate success values | `ensure` | You want to keep a success value only if it passes a predicate. |
@@ -384,6 +386,37 @@ const result = await ResultFlow
 
 // Err({ reason: 'too-small', value: 5 })
 ```
+
+### Normalize Success And Error Values Together
+
+Use `mapBoth` when both sides should be converted into the shapes your caller expects. It calls only the handler for the actual result.
+
+```ts
+type RawUser = { id: number; email: string };
+type UserDto = { id: string; email: string };
+type ApiError = { status: number; code: string };
+
+declare function findRawUser(id: string): N.ResultAsync<RawUser, 'not-found'>;
+
+const result = await ResultFlow
+  .from<RawUser, 'not-found'>(findRawUser('42'))
+  .mapBoth({
+    ok: (user): UserDto => ({
+      id: user.id.toString(),
+      email: user.email.toLowerCase(),
+    }),
+    err: (error): ApiError => ({
+      status: 404,
+      code: error,
+    }),
+  })
+  .run();
+
+// Ok({ id: '42', email: 'ada@example.com' })
+// or Err({ status: 404, code: 'not-found' })
+```
+
+Use `map` or `mapError` when only one side changes. Use `mapBoth` when success and error normalization belong together.
 
 ### Handle One Failure Manually
 
@@ -1123,6 +1156,49 @@ const result = await ResultFlow
 
 // Ok(15)
 ```
+
+### `mapBoth`
+
+Transforms either side of a flow in one call. If the flow succeeds, `mapBoth` calls `ok` and returns `Ok(mappedValue)`. If the flow fails, it calls `err` and returns `Err(mappedError)`.
+
+Only the selected handler runs. If the underlying flow throws or rejects, `run()` rejects and neither handler is called. If the selected handler throws, `run()` rejects with that exception.
+
+```ts
+flow.mapBoth<A2, E2>({
+  ok: (value: A, extras: { context: C; abortSignal?: AbortSignal }) => A2;
+  err: (error: E, extras: { context: C; abortSignal?: AbortSignal }) => E2;
+}): ResultFlow<A2, E2, C>
+```
+
+Success example:
+
+```ts
+const result = await ResultFlow
+  .from<number, string>(N.ok(10))
+  .mapBoth({
+    ok: (value) => value.toString(),
+    err: (error) => ({ code: error }),
+  })
+  .run();
+
+// Ok('10')
+```
+
+Error example:
+
+```ts
+const result = await ResultFlow
+  .from<number, string>(N.err('not-found'))
+  .mapBoth({
+    ok: (value) => value.toString(),
+    err: (error) => ({ code: error, retryable: false }),
+  })
+  .run();
+
+// Err({ code: 'not-found', retryable: false })
+```
+
+`mapBoth` is useful when both success and error values should be normalized together. Prefer `map` when only the success value changes, and `mapError` when only the error value changes.
 
 ### `ensure`
 

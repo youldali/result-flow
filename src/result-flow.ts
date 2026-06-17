@@ -293,6 +293,23 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     });
   }
 
+  mapBoth<A2, E2>(
+    handlers: {
+      ok: (value: A, extras: Extras<C>) => A2;
+      err: (error: E, extras: Extras<C>) => E2;
+    },
+  ): ResultFlow<A2, E2, C> {
+    return ResultFlow.of<A2, E2, C>(async ({ fail }, extras) => {
+      const result = await this.run(extras);
+
+      if (result.isOk()) {
+        return handlers.ok(result.value, extras);
+      }
+
+      return fail(handlers.err(result.error, extras));
+    });
+  }
+
   ensure<E2>(
     predicate: (value: A, extras: Extras<C>) => boolean | Promise<boolean>,
     onFailure: (value: A, extras: Extras<C>) => E2 | Promise<E2>,
