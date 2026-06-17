@@ -1,11 +1,45 @@
 {
   "name": "result-flow",
   "version": "1.0.0",
-  "description": "",
+  "description": "Lazy, typed workflow composition for neverthrow Result and ResultAsync values.",
+  "keywords": [
+    "neverthrow",
+    "result",
+    "resultasync",
+    "typescript",
+    "functional",
+    "workflow",
+    "retry",
+    "polling"
+  ],
   "license": "ISC",
-  "author": "",
+  "author": "Yannis Ouldali",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/youldali/result-flow.git"
+  },
+  "bugs": {
+    "url": "https://github.com/youldali/result-flow/issues"
+  },
+  "homepage": "https://github.com/youldali/result-flow#readme",
   "type": "module",
-  "main": "index.js",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "packageManager": "npm@11.13.0",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
+  },
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",

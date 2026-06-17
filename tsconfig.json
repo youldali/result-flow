@@ -42,5 +42,6 @@
     "skipLibCheck": true,
 
     "moduleResolution": "nodenext",
-  }
+  },
+  "exclude": ["dist", "src/**/*.test.ts"]
 }

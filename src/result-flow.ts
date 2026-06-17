@@ -596,7 +596,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
 	}
 }
 
-export class ResultInterruption<E = unknown> extends Error {
+class ResultInterruption<E = unknown> extends Error {
   public readonly error: Err<any, E>;
 
   constructor(error: Err<any, E>) {
