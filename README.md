@@ -4,6 +4,8 @@
 
 That lazy execution model makes it possible to extend `neverthrow` workflows with behavior such as retries, polling, periodic execution, timeouts, and context passing. A flow stops on the first `Err`, returns that error from `run()`, and skips the remaining success path.
 
+`ResultFlow` has no bundled runtime dependencies. `neverthrow` is a required peer dependency, so install it alongside `result-flow`.
+
 ## Table Of Contents
 
 - [Why ResultFlow](#why-resultflow)
@@ -107,7 +109,7 @@ The success path stays linear. The failure path stays typed. The work does not s
 npm install result-flow neverthrow
 ```
 
-`neverthrow` is a peer dependency.
+`result-flow` is dependency-free at runtime except for its required `neverthrow` peer dependency. Installing both packages keeps `neverthrow` explicit in your application and avoids pulling extra transitive dependencies into your runtime.
 
 ## Quick Start
 
@@ -149,6 +151,12 @@ Both versions return the same type:
 
 ```ts
 // Promise<Result<User, UserError>>
+```
+
+Most examples below use `N.ok`, `N.err`, or `N.ResultAsync` from `neverthrow`:
+
+```ts
+import * as N from 'neverthrow';
 ```
 
 ## API At A Glance
@@ -216,6 +224,22 @@ runPeriodically -> run ongoing background work
 | --- | --- | --- |
 | `orElse` | Another `Result`, `ResultAsync`, `Promise<Result>`, or `ResultFlow`. | The fallback work can fail. |
 | `recover` | A plain value or `Promise` of a plain value. | The fallback is infallible and should turn failure into `Ok`. |
+
+### Transforming Values
+
+| Method | Runs On | Use When |
+| --- | --- | --- |
+| `map` | `Ok(value)` | Only the success value should change. |
+| `mapError` | `Err(error)` | Only the error value should change. |
+| `mapBoth` | Either `Ok` or `Err` | Both sides should be normalized together. Only the matching handler runs. |
+
+### Observing Results
+
+| Method | Runs On | Changes The Result? |
+| --- | --- | --- |
+| `tap` / `ifSuccess` | `Ok(value)` | No. |
+| `tapError` / `ifFailure` | `Err(error)` | No. |
+| `finally` / `tapBoth` | Both `Ok` and `Err` | No. |
 
 ### Combining Flows
 
@@ -785,7 +809,10 @@ Builds a flow from an async function. The function receives helpers and extras.
 
 ```ts
 ResultFlow.of<A, E, C>(
-  builder: (helpers: ResultFlowHelpers<E>, extras: { context: C }) => Promise<A>,
+  builder: (
+    helpers: ResultFlowHelpers<E>,
+    extras: { context: C; abortSignal?: AbortSignal },
+  ) => Promise<A>,
 ): ResultFlow<A, E, C>
 ```
 
@@ -891,7 +918,7 @@ Creates a flow from an async generator. Inside the generator, use `yield*` with 
 
 ```ts
 ResultFlow.gen<A, E, C>(
-  generator: (extras: { context: C }) => AsyncGenerator<
+  generator: (extras: { context: C; abortSignal?: AbortSignal }) => AsyncGenerator<
     ResultFlow<unknown, E, Partial<C>> | N.Result<unknown, E> | N.ResultAsync<unknown, E>,
     A,
     unknown
@@ -1076,10 +1103,11 @@ Executes the flow and returns a `Promise<Result<A, E>>`.
 
 ```ts
 flow.run(): Promise<N.Result<A, E>>
+flow.run({ abortSignal }: { abortSignal?: AbortSignal }): Promise<N.Result<A, E>>
 flow.run({ context, abortSignal }: { context: C; abortSignal?: AbortSignal }): Promise<N.Result<A, E>>
 ```
 
-The context argument is only needed when the flow declares a context type.
+The context argument is only needed when the flow declares a context type. `abortSignal` can be passed with or without context.
 
 Examples:
 
@@ -1142,7 +1170,7 @@ Transforms a success value. It does not run when the flow is a failure.
 
 ```ts
 flow.map<A2>(
-  mapper: (value: A, extras: { context: C }) => A2,
+  mapper: (value: A, extras: { context: C; abortSignal?: AbortSignal }) => A2,
 ): ResultFlow<A2, E, C>
 ```
 
@@ -1208,8 +1236,8 @@ It does not run when the flow is already a failure.
 
 ```ts
 flow.ensure<E2>(
-  predicate: (value: A, extras: { context: C }) => boolean | Promise<boolean>,
-  onFailure: (value: A, extras: { context: C }) => E2 | Promise<E2>,
+  predicate: (value: A, extras: { context: C; abortSignal?: AbortSignal }) => boolean | Promise<boolean>,
+  onFailure: (value: A, extras: { context: C; abortSignal?: AbortSignal }) => E2 | Promise<E2>,
 ): ResultFlow<A, E | E2, C>
 ```
 
@@ -1235,7 +1263,7 @@ Transforms a failure value. It does not run when the flow is a success.
 
 ```ts
 flow.mapError<E2>(
-  mapper: (error: E, extras: { context: C }) => E2,
+  mapper: (error: E, extras: { context: C; abortSignal?: AbortSignal }) => E2,
 ): ResultFlow<A, E2, C>
 ```
 
@@ -1256,7 +1284,7 @@ Runs another result-producing operation after a success. It does not run when th
 
 ```ts
 flow.chain<A2, E2, C2>(
-  mapper: (value: A, extras: { context: C & C2 }) =>
+  mapper: (value: A, extras: { context: C & C2; abortSignal?: AbortSignal }) =>
     | ResultFlow<A2, E2, C2>
     | N.Result<A2, E2>
     | N.ResultAsync<A2, E2>
@@ -1291,7 +1319,7 @@ Runs a fallback when the previous flow fails. The fallback receives the previous
 
 ```ts
 flow.orElse<E2, C2>(
-  fallback: (error: E, extras: { context: C & C2 }) =>
+  fallback: (error: E, extras: { context: C & C2; abortSignal?: AbortSignal }) =>
     | ResultFlow<A, E2, C2>
     | N.Result<A, E2>
     | N.ResultAsync<A, E2>
@@ -1327,7 +1355,7 @@ Turns a failure into a fallback success value. The fallback receives the previou
 
 ```ts
 flow.recover<A2>(
-  fallback: (error: E, extras: { context: C }) => A2 | Promise<A2>,
+  fallback: (error: E, extras: { context: C; abortSignal?: AbortSignal }) => A2 | Promise<A2>,
 ): ResultFlow<A | A2, never, C>
 ```
 
@@ -1361,7 +1389,7 @@ Runs a side effect when the flow succeeds, then keeps the original success value
 
 ```ts
 flow.ifSuccess(
-  effect: (value: A, extras: { context: C }) => void | Promise<void>,
+  effect: (value: A, extras: { context: C; abortSignal?: AbortSignal }) => void | Promise<void>,
 ): ResultFlow<A, E, C>
 ```
 
@@ -1384,7 +1412,7 @@ Alias for `ifSuccess`.
 
 ```ts
 flow.tap(
-  effect: (value: A, extras: { context: C }) => void | Promise<void>,
+  effect: (value: A, extras: { context: C; abortSignal?: AbortSignal }) => void | Promise<void>,
 ): ResultFlow<A, E, C>
 ```
 
@@ -1405,7 +1433,7 @@ Runs a side effect when the flow fails, then keeps the original failure value.
 
 ```ts
 flow.ifFailure(
-  effect: (error: E, extras: { context: C }) => void | Promise<void>,
+  effect: (error: E, extras: { context: C; abortSignal?: AbortSignal }) => void | Promise<void>,
 ): ResultFlow<A, E, C>
 ```
 
@@ -1428,7 +1456,7 @@ Alias for `ifFailure`.
 
 ```ts
 flow.tapError(
-  effect: (error: E, extras: { context: C }) => void | Promise<void>,
+  effect: (error: E, extras: { context: C; abortSignal?: AbortSignal }) => void | Promise<void>,
 ): ResultFlow<A, E, C>
 ```
 
@@ -1449,7 +1477,7 @@ Runs a side effect after the flow returns either `Ok` or `Err`, then keeps the o
 
 ```ts
 flow.finally(
-  effect: (result: N.Result<A, E>, extras: { context: C }) => void | Promise<void>,
+  effect: (result: N.Result<A, E>, extras: { context: C; abortSignal?: AbortSignal }) => void | Promise<void>,
 ): ResultFlow<A, E, C>
 ```
 
@@ -1474,7 +1502,7 @@ Alias for `finally`.
 
 ```ts
 flow.tapBoth(
-  effect: (result: N.Result<A, E>, extras: { context: C }) => void | Promise<void>,
+  effect: (result: N.Result<A, E>, extras: { context: C; abortSignal?: AbortSignal }) => void | Promise<void>,
 ): ResultFlow<A, E, C>
 ```
 
@@ -1500,7 +1528,11 @@ Retries the previous flow when it returns an `Err`. It is for transient failures
 ```ts
 flow.retryPolicy(params?: {
   condition?: (error: E) => boolean;
-  beforeRetry?: (error: E, retryNumber: number, extras: { context: C }) => Promise<void> | void;
+  beforeRetry?: (
+    error: E,
+    retryNumber: number,
+    extras: { context: C; abortSignal?: AbortSignal },
+  ) => Promise<void> | void;
   maxRetries?: number;
   retryStrategy?: DelayStrategy;
 }): ResultFlow<A, E, C>
