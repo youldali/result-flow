@@ -36,6 +36,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
   - [`ResultFlow.lift`](#resultflowlift)
   - [`ResultFlow.isResultFlow`](#resultflowisresultflow)
   - [`ResultFlow.gen`](#resultflowgen)
+  - [`ResultFlow.all`](#resultflowall)
   - [`ResultFlow.allSettled`](#resultflowallsettled)
   - [`ResultFlow.firstOk`](#resultflowfirstok)
   - [`ResultFlow.race`](#resultflowrace)
@@ -157,7 +158,7 @@ Both versions return the same type:
 | Validate success values | `ensure` | You want to keep a success value only if it passes a predicate. |
 | Recover from failures | `recover` | You want to turn a failure into an infallible fallback success value. |
 | Control execution | `retryPolicy`, `timeout`, `runPeriodically` | You want retries, time limits, or repeated execution around the same lazy flow. |
-| Coordinate flows | `allSettled`, `race`, `firstOk` | You want to combine multiple lazy flows. |
+| Coordinate flows | `all`, `allSettled`, `race`, `firstOk` | You want to combine multiple lazy flows. |
 
 Aliases:
 
@@ -435,11 +436,11 @@ You can yield `ResultFlow`, `Result`, or `ResultAsync` values. The flow unwraps 
 
 ### Combine Independent Flows
 
-Use `ResultFlow.allSettled` when you have several flows that should run in order and collect their success values.
+Use `ResultFlow.all` when you have several flows that should run in order and collect their success values.
 
 ```ts
 const result = await ResultFlow
-  .allSettled([
+  .all([
     ResultFlow.from(N.ok('user-1')),
     ResultFlow.from(N.ok(42)),
     ResultFlow.from(N.ok(true)),
@@ -453,7 +454,7 @@ The combined flow is lazy. None of the input flows runs until the returned flow 
 
 ```ts
 const result = await ResultFlow
-  .allSettled([
+  .all([
     ResultFlow.from(N.ok('cached-user')),
     ResultFlow.from<number, 'quota-exceeded'>(N.err('quota-exceeded')),
     ResultFlow.from(N.ok('not-run')),
@@ -462,6 +463,22 @@ const result = await ResultFlow
 
 // Err('quota-exceeded')
 ```
+
+Use `ResultFlow.allSettled` when every input flow should run and you want to inspect each returned `Result`. When the returned flow is run, all input flows are started in parallel, and the final array still preserves the original input order.
+
+```ts
+const result = await ResultFlow
+  .allSettled([
+    ResultFlow.from(N.ok('cached-user')),
+    ResultFlow.from<number, 'quota-exceeded'>(N.err('quota-exceeded')),
+    ResultFlow.from(N.ok('fresh-user')),
+  ] as const)
+  .run();
+
+// Ok([Ok('cached-user'), Err('quota-exceeded'), Ok('fresh-user')])
+```
+
+The difference is the execution and failure behavior: `all` runs flows in order and short-circuits on the first `Err`; `allSettled` starts all flows in parallel and returns `Ok([...Result])`.
 
 ### Use The First Successful Flow
 
@@ -748,18 +765,18 @@ const flow = ResultFlow.gen<number, never, Context>(async function* ({ context }
 await flow.run({ context: { multiplier: 3 } }); // Ok(30)
 ```
 
-### `ResultFlow.allSettled`
+### `ResultFlow.all`
 
 Combines multiple `ResultFlow`s into one lazy flow. The returned flow runs each input flow in array order, returns `Ok` with the collected success values when all flows succeed, and returns the first `Err` when any flow fails.
 
 ```ts
-ResultFlow.allSettled(flows): ResultFlow<Values, Errors, Context>
+ResultFlow.all(flows): ResultFlow<Values, Errors, Context>
 ```
 
 Example:
 
 ```ts
-const flow = ResultFlow.allSettled([
+const flow = ResultFlow.all([
   ResultFlow.from(N.ok(10)),
   ResultFlow.from(N.ok('ready')),
 ] as const);
@@ -772,7 +789,7 @@ For readonly tuple inputs, the success type is preserved as a tuple. Error types
 ```ts
 type Context = { requestId: string };
 
-const flow = ResultFlow.allSettled([
+const flow = ResultFlow.all([
   ResultFlow.of<number, 'missing', Context>(async (_helpers, { context }) => {
     return context.requestId.length;
   }),
@@ -780,6 +797,44 @@ const flow = ResultFlow.allSettled([
 ] as const);
 
 // ResultFlow<readonly [number, boolean], 'missing' | 'invalid', Context>
+await flow.run({ context: { requestId: 'req-123' } });
+```
+
+An empty input array succeeds with `Ok([])`.
+
+### `ResultFlow.allSettled`
+
+Combines multiple `ResultFlow`s into one lazy flow that starts every input flow in parallel and collects each returned `Result` in input order. Input `Err` values are returned inside the success array; they do not fail the outer flow.
+
+```ts
+ResultFlow.allSettled(flows): ResultFlow<Results, never, Context>
+```
+
+Example:
+
+```ts
+const flow = ResultFlow.allSettled([
+  ResultFlow.from(N.ok(10)),
+  ResultFlow.from<string, 'missing'>(N.err('missing')),
+  ResultFlow.from(N.ok('ready')),
+] as const);
+
+await flow.run(); // Ok([Ok(10), Err('missing'), Ok('ready')])
+```
+
+For readonly tuple inputs, the success type is preserved as a tuple of `Result` values. The outer error type is `never`, and context types are combined so the returned flow requires the context needed by every input flow.
+
+```ts
+type Context = { requestId: string };
+
+const flow = ResultFlow.allSettled([
+  ResultFlow.of<number, 'missing', Context>(async (_helpers, { context }) => {
+    return context.requestId.length;
+  }),
+  ResultFlow.from<boolean, 'invalid'>(N.err('invalid')),
+] as const);
+
+// ResultFlow<readonly [Result<number, 'missing'>, Result<boolean, 'invalid'>], never, Context>
 await flow.run({ context: { requestId: 'req-123' } });
 ```
 

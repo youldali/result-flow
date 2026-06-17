@@ -37,6 +37,7 @@ type FlowContext<F> = F extends ResultFlow<any, any, infer C> ? C : never;
 type FlowSuccesses<Flows extends readonly ResultFlow<any, any, any>[]> = FlowSuccess<Flows[number]>;
 type FlowErrors<Flows extends readonly ResultFlow<any, any, any>[]> = FlowError<Flows[number]>;
 type FlowErrorArray<Flows extends readonly ResultFlow<any, any, any>[]> = FlowErrors<Flows>[];
+type FlowResult<F> = F extends ResultFlow<infer A, infer E, any> ? Result<A, E> : never;
 type NormalizeContext<C> = IsAny<C> extends true
   ? DefaultContext
   : C extends BaseContext
@@ -47,6 +48,9 @@ type FlowContexts<Flows extends readonly ResultFlow<any, any, any>[]> = Normaliz
 >;
 type FlowValues<Flows extends readonly ResultFlow<any, any, any>[]> = {
   [K in keyof Flows]: FlowSuccess<Flows[K]>;
+};
+type FlowResults<Flows extends readonly ResultFlow<any, any, any>[]> = {
+  [K in keyof Flows]: FlowResult<Flows[K]>;
 };
 
 export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
@@ -106,7 +110,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     return ResultFlow.from(value);
   }
 
-  static allSettled<const Flows extends readonly ResultFlow<any, any, any>[]>(
+  static all<const Flows extends readonly ResultFlow<any, any, any>[]>(
     flows: Flows,
   ): ResultFlow<
     FlowValues<Flows>,
@@ -130,6 +134,40 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
       }
 
       return values as FlowValues<Flows>;
+    });
+  }
+
+  static allSettled<const Flows extends readonly ResultFlow<any, any, any>[]>(
+    flows: Flows,
+  ): ResultFlow<
+    FlowResults<Flows>,
+    never,
+    FlowContexts<Flows>
+  > {
+    return ResultFlow.of<
+      FlowResults<Flows>,
+      never,
+      FlowContexts<Flows>
+    >(async (_helpers, extras) => {
+      const flowsToRun = flows as readonly ResultFlow<
+        unknown,
+        FlowErrors<Flows>,
+        FlowContexts<Flows>
+      >[];
+      const settledResults = await Promise.allSettled(
+        flowsToRun.map((flow) => flow.run(extras)),
+      );
+      const results: Result<unknown, FlowErrors<Flows>>[] = [];
+
+      for (const settledResult of settledResults) {
+        if (settledResult.status === 'rejected') {
+          throw settledResult.reason;
+        }
+
+        results.push(settledResult.value);
+      }
+
+      return results as FlowResults<Flows>;
     });
   }
 
