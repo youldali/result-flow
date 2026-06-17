@@ -20,6 +20,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
   - [Validate A Success Value](#validate-a-success-value)
   - [Handle One Failure Manually](#handle-one-failure-manually)
   - [Fallback To Another Flow](#fallback-to-another-flow)
+  - [Recover With An Infallible Value](#recover-with-an-infallible-value)
   - [Run Side Effects After Any Result](#run-side-effects-after-any-result)
   - [Use Generator Syntax](#use-generator-syntax)
   - [Combine Independent Flows](#combine-independent-flows)
@@ -43,6 +44,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
   - [`mapError`](#maperror)
   - [`chain`](#chain)
   - [`orElse`](#orelse)
+  - [`recover`](#recover)
   - [`ifSuccess`](#ifsuccess)
   - [`tap`](#tap)
   - [`ifFailure`](#iffailure)
@@ -173,7 +175,7 @@ ResultFlow.of<User, UserError, { requestId: string }>(async () => ({
 
 A flow is a thunk: a description of work. Nothing runs until you call `run()`.
 
-Methods such as `map`, `ensure`, `chain`, `orElse`, and `retryPolicy` return new flows. They do not mutate the original flow.
+All `ResultFlow` methods are immutable: they return new flows and do not mutate the original flow.
 
 ```ts
 const base = ResultFlow.from(N.ok(10));
@@ -335,7 +337,7 @@ Use `fail(error)` to stop the flow with a typed error from your own logic.
 
 ### Fallback To Another Flow
 
-Use `orElse` when a failure should trigger a fallback.
+Use `orElse` when a failure should trigger another fallible operation.
 
 ```ts
 type Data = { id: string; value: string };
@@ -353,6 +355,25 @@ const result = await ResultFlow
 ```
 
 The fallback is not executed when the first flow succeeds.
+
+### Recover With An Infallible Value
+
+Use `recover` when a failure can be replaced with a plain fallback value. The fallback returns the success value directly, not a `Result`, so the recovered flow has error type `never`.
+
+```ts
+type Profile = { name: string; theme: 'light' | 'dark' };
+
+declare function loadProfile(id: string): ResultAsync<Profile, 'not-found'>;
+
+const result = await ResultFlow
+  .from(loadProfile('user-1'))
+  .recover(() => ({ name: 'Guest', theme: 'light' }))
+  .run();
+
+// Ok({ name: 'Guest', theme: 'light' })
+```
+
+`recover` is for infallible fallback values. Use `orElse` instead when the fallback work can fail and should return another `Result`, `ResultAsync`, or `ResultFlow`.
 
 ### Run Side Effects After Any Result
 
@@ -949,7 +970,7 @@ const result = await ResultFlow
 
 ### `orElse`
 
-Runs a fallback when the previous flow fails. The fallback receives the previous error.
+Runs a fallback when the previous flow fails. The fallback receives the previous error and returns another fallible operation.
 
 ```ts
 flow.orElse<E2, C2>(
@@ -982,6 +1003,40 @@ const result = await ResultFlow
 
 // Err('db-error')
 ```
+
+### `recover`
+
+Turns a failure into a fallback success value. The fallback receives the previous error and returns a plain value, so the returned flow has error type `never`.
+
+```ts
+flow.recover<A2>(
+  fallback: (error: E, extras: { context: C }) => A2 | Promise<A2>,
+): ResultFlow<A | A2, never, C>
+```
+
+Example:
+
+```ts
+const result = await ResultFlow
+  .from<number, 'missing'>(N.err('missing'))
+  .recover(() => 0)
+  .run();
+
+// Ok(0)
+```
+
+The fallback is not called when the original flow succeeds.
+
+```ts
+const result = await ResultFlow
+  .from<number, 'missing'>(N.ok(10))
+  .recover(() => 0)
+  .run();
+
+// Ok(10)
+```
+
+Use `recover` for infallible fallback values. Use `orElse` for fallback operations that can fail and return another `Result`, `ResultAsync`, or `ResultFlow`.
 
 ### `ifSuccess`
 

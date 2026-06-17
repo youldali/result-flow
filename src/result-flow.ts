@@ -319,6 +319,19 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     });
   }
 
+  recover<A2>(
+    f: (error: E, extras: Extras<C>) => A2 | Promise<A2>,
+  ): ResultFlow<A | A2, never, C> {
+    return ResultFlow.of<A | A2, never, C>(async (_helpers, extras) => {
+      const result = await this.run(extras);
+      if (result.isOk()) {
+        return result.value;
+      }
+
+      return f(result.error, extras);
+    });
+  }
+
   retryPolicy({
     beforeRetry,
     condition = () => true,

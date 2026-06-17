@@ -1834,6 +1834,112 @@ describe('ResultFlow', () => {
     });
   });
 
+  describe('recover', () => {
+    it('should not call the fallback when the flow succeeds', async () => {
+      const fallback = mock.fn(() => 20);
+
+      await ResultFlow.from<number, 'error'>(N.ok(10)).recover(fallback).run();
+
+      deepEqual(fallback.mock.callCount(), 0);
+    });
+
+    it('should return the original success value unchanged', async () => {
+      const value = { count: 10 };
+
+      const result = await ResultFlow.from<typeof value, 'error'>(N.ok(value))
+        .recover(() => ({ count: 20 }))
+        .run();
+
+      strictEqual(result._unsafeUnwrap(), value);
+    });
+
+    it('should call the fallback when the flow fails', async () => {
+      const fallback = mock.fn((error: string) => `${error}-recovered`);
+
+      await ResultFlow.from<number, string>(N.err('error')).recover(fallback).run();
+
+      deepEqual(fallback.mock.calls[0]?.arguments, ['error', { context: {} }]);
+    });
+
+    it('should turn the fallback value into an Ok', async () => {
+      const result = await ResultFlow.from<number, string>(N.err('error'))
+        .recover(() => 20)
+        .run();
+
+      deepEqual(result, N.ok(20));
+    });
+
+    it('should support async fallback functions', async () => {
+      const result = await ResultFlow.from<number, string>(N.err('error'))
+        .recover(async () => 20)
+        .run();
+
+      deepEqual(result, N.ok(20));
+    });
+
+    it('should pass context to the fallback', async () => {
+      const fallback = mock.fn((error: string, extras: { context: Context }) => {
+        return `${extras.context.userId}:${error}`;
+      });
+
+      const result = await ResultFlow.from<number, string, Context>(N.err('error'))
+        .recover(fallback)
+        .run({ context });
+
+      deepEqual(result, N.ok('test-user-id:error'));
+      deepEqual(fallback.mock.calls[0]?.arguments, ['error', { context }]);
+    });
+
+    it('should be immutable', async () => {
+      const r1 = ResultFlow.from<number, string>(N.err('error'));
+      const r2 = r1.recover(() => 10);
+
+      deepEqual(await r1.run(), N.err('error'));
+      deepEqual(await r2.run(), N.ok(10));
+    });
+
+    it('should reject when the fallback throws', async () => {
+      const resultFlow = ResultFlow.from<number, string>(N.err('error')).recover(() => {
+        throw new Error('recover failed');
+      });
+
+      await rejects(() => resultFlow.run(), /recover failed/);
+    });
+
+    it('should reject when the fallback rejects', async () => {
+      const resultFlow = ResultFlow.from<number, string>(N.err('error')).recover(async () => {
+        throw new Error('recover rejected');
+      });
+
+      await rejects(() => resultFlow.run(), /recover rejected/);
+    });
+
+    it('should not call the fallback when the original flow throws or rejects', async () => {
+      const throwingFallback = mock.fn(() => 20);
+      const rejectingFallback = mock.fn(() => 20);
+      const throwingFlow = ResultFlow.of<number, never>(async () => {
+        throw new Error('flow threw');
+      }).recover(throwingFallback);
+      const rejectingFlow = ResultFlow.from<number, string>(() =>
+        Promise.reject(new Error('flow rejected')),
+      ).recover(rejectingFallback);
+
+      await rejects(() => throwingFlow.run(), /flow threw/);
+      await rejects(() => rejectingFlow.run(), /flow rejected/);
+      deepEqual(throwingFallback.mock.callCount(), 0);
+      deepEqual(rejectingFallback.mock.callCount(), 0);
+    });
+
+    it('should remove the error type', async () => {
+      const flow = ResultFlow.from<number, 'error'>(N.err('error')).recover(() => 'fallback' as const);
+      const typedFlow: ResultFlow<number | 'fallback', never> = flow;
+
+      const result = await typedFlow.run();
+
+      deepEqual(result, N.ok('fallback'));
+    });
+  });
+
   describe('retryPolicy', () => {
     const success = 10;
     const defaultError = 'error';
