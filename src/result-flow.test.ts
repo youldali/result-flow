@@ -4,6 +4,7 @@ import { describe, it, mock, type Mock, type TestContext } from 'node:test';
 import * as N from 'neverthrow';
 import { Result } from 'neverthrow';
 import { ResultFlow } from './result-flow.js';
+import type { ResultFlowExtras, ResultFlowRunParams } from './index.js';
 
 type Row = {
   id: number;
@@ -159,7 +160,7 @@ describe('ResultFlow', () => {
 
     it('should be able to access the context', async () => {
       const mockFn = mock.fn();
-      await ResultFlow.gen<number, Error, Context>(async function* ({ context }: { context: Context }) {
+      await ResultFlow.gen<number, Error, Context>(async function* ({ context }: ResultFlowExtras<Context>) {
         const a = yield* N.okAsync(5);
         const b = yield* N.okAsync(10);
         mockFn(context);
@@ -203,13 +204,14 @@ describe('ResultFlow', () => {
   describe('run', () => {
      it('should accept a context', async () => {
       type Context = { correlationId: string };
+      const runParams: ResultFlowRunParams<Context> = { context: { correlationId: '123' } };
       const resultFlow = ResultFlow.of<Row, FlowFailure, Context>(async ({ tryTo }) => {
         const row = await tryTo(findById(1));
         await tryTo(validate(row, true));
         return tryTo(updateById(row.id, { name: 'updated-name' }));
       });
 
-      const result = await resultFlow.run({ context: { correlationId: '123' } });
+      const result = await resultFlow.run(runParams);
       const value = result._unsafeUnwrap();
       deepEqual(value, { id: 1, name: 'updated-name' });
     });
