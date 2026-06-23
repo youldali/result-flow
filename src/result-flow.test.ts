@@ -311,24 +311,6 @@ describe('ResultFlow', () => {
       deepEqual(result, N.ok(20));
     });
 
-    it('should map tryToOrRecover errors before calling the fallback', async () => {
-      const fallback = mock.fn((error: { kind: 'flow-error'; cause: FlowFailure }) => error.cause.operation);
-      const resultFlow = ResultFlow.of<Row | string, { kind: 'flow-error'; cause: FlowFailure }>(
-        async ({ tryToOrRecover }) => {
-          return tryToOrRecover(findById(2), fallback, {
-            mapError: (error) => ({ kind: 'flow-error', cause: error }),
-          });
-        },
-      );
-
-      const result = await resultFlow.run();
-
-      deepEqual(result, N.ok('findById'));
-      deepEqual(fallback.mock.calls[0]?.arguments, [
-        { kind: 'flow-error', cause: { reason: 'not-found', operation: 'findById' } },
-      ]);
-    });
-
     it('should reject when tryToOrRecover receives a rejected promise', async () => {
       const fallback = mock.fn(() => 'fallback');
       const resultFlow = ResultFlow.of<string, FlowFailure>(async ({ tryToOrRecover }) => {
@@ -337,6 +319,56 @@ describe('ResultFlow', () => {
 
       await rejects(async () => resultFlow.run(), /error description/);
       deepEqual(fallback.mock.callCount(), 0);
+    });
+
+    it('should not call tryToOrElse fallback when the result succeeds', async () => {
+      const fallback = mock.fn(() => N.ok({ id: 0, name: 'default' }));
+      const resultFlow = ResultFlow.of<Row, FlowFailure>(async ({ tryToOrElse }) => {
+        return tryToOrElse(findById(1), fallback);
+      });
+
+      const result = await resultFlow.run();
+
+      deepEqual(result, N.ok({ id: 1, name: 'test' }));
+      deepEqual(fallback.mock.callCount(), 0);
+    });
+
+    it('should run a fallback Result with tryToOrElse when the result fails', async () => {
+      const fallback = mock.fn((error: FindByIdFailure) => {
+        return N.ok<Row, FlowFailure>({ id: 0, name: `${error.operation}-fallback` });
+      });
+      const resultFlow = ResultFlow.of<Row, FlowFailure>(async ({ tryToOrElse }) => {
+        return tryToOrElse(findById(2), fallback);
+      });
+
+      const result = await resultFlow.run();
+
+      deepEqual(result, N.ok({ id: 0, name: 'findById-fallback' }));
+      deepEqual(fallback.mock.calls[0]?.arguments, [{ reason: 'not-found', operation: 'findById' }]);
+    });
+
+    it('should fail with the fallback error when tryToOrElse fallback fails', async () => {
+      const resultFlow = ResultFlow.of<Row, FlowFailure | UpdateByIdFailure>(async ({ tryToOrElse }) => {
+        return tryToOrElse(findById(2), () => updateById(2, { name: 'fallback' }));
+      });
+
+      const result = await resultFlow.run();
+
+      deepEqual(result, N.err({ reason: 'not-found', operation: 'updateById' }));
+    });
+
+    it('should run a fallback ResultFlow with the current context', async () => {
+      type FallbackContext = { userId: string };
+      const fallbackFlow = ResultFlow.of<Row, FlowFailure, FallbackContext>(
+        async (_helpers, { context }) => ({ id: 0, name: context.userId }),
+      );
+      const resultFlow = ResultFlow.of<Row, FlowFailure, FallbackContext>(async ({ tryToOrElse }) => {
+        return tryToOrElse(findById(2), () => fallbackFlow);
+      });
+
+      const result = await resultFlow.run({ context: { userId: 'fallback-user' } });
+
+      deepEqual(result, N.ok({ id: 0, name: 'fallback-user' }));
     });
 
     it('should return a failure as soon as a function returns a failure result', async () => {

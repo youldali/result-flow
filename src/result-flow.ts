@@ -4,6 +4,10 @@ import * as PromiseHelpers from './promise-helpers.js';
 import { calculateDelay, wait, type DelayStrategy } from './delay.js';
 import type { IsAny, UnionToIntersection } from './typeHelper.js';
 
+type DefaultContext = Record<never, never>;
+type BaseContext = Record<string, any>;
+type PolymorphicResult<A, E, C extends BaseContext = DefaultContext> = ResultFlow<A, E, C> | Promise<Result<A, E>> | Result<A, E> | ResultAsync<A, E>;
+
 export interface ResultFlowHelpers<E> {
   tryTo<A>(result: Result<A, E> | Promise<Result<A, E>> | ResultAsync<A, E>): Promise<A>;
   tryTo<A, E2>(
@@ -16,13 +20,10 @@ export interface ResultFlowHelpers<E> {
     result: Result<A, E> | Promise<Result<A, E>> | ResultAsync<A, E>,
     fallback: (error: E) => A2 | Promise<A2>,
   ): Promise<A | A2>;
-  tryToOrRecover<A, E2, A2>(
-    result: Result<A, E2> | Promise<Result<A, E2>> | ResultAsync<A, E2>,
-    fallback: (error: E) => A2 | Promise<A2>,
-    options: {
-      mapError: (value: E2) => E;
-    },
-  ): Promise<A | A2>;
+  tryToOrElse<A>(
+    result: Result<A, E> | Promise<Result<A, E>> | ResultAsync<A, E>,
+    fallback: (error: E) => PolymorphicResult<A, E>,
+  ): Promise<A>;
   fail(error: E): never;
   promiseHelpers: PromiseHelpers.PromiseHelpers;
 }
@@ -35,9 +36,6 @@ const unwrap = <A, E>(result: Result<A, E>): A => {
   throw new ResultInterruption(result);
 };
 
-type DefaultContext = Record<never, never>;
-type BaseContext = Record<string, any>;
-type PolymorphicResult<A, E, C extends BaseContext = DefaultContext> = ResultFlow<A, E, C> | Promise<Result<A, E>> | Result<A, E> | ResultAsync<A, E>;
 // RunParams is the public caller input. Extras is the normalized runtime shape
 // passed to flow callbacks, so context is always present there.
 export type ResultFlowExtras<C extends BaseContext = DefaultContext> = { context: C; abortSignal?: AbortSignal; };
@@ -84,41 +82,58 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     return abortSignal ? { context, abortSignal } : { context };
   }
 
-  private helpers: ResultFlowHelpers<E> = {
-    tryTo<A1, E2>(
-      result: Result<A1, E2> | Promise<Result<A1, E2>>,
-      options?: {
-        mapError?: (value: E2) => E;
-      },
-    ): Promise<A1> {
-      return options?.mapError
-        ? PromiseHelpers.mapError(Promise.resolve(result), options.mapError).then(unwrap)
-        : Promise.resolve(result).then(unwrap);
-    },
-    async tryToOrRecover<A1, E2, A2>(
-      result: Result<A1, E2> | Promise<Result<A1, E2>> | ResultAsync<A1, E2>,
-      fallback: (error: E) => A2 | Promise<A2>,
-      options?: {
-        mapError?: (value: E2) => E;
-      },
-    ): Promise<A1 | A2> {
-      const resolvedResult = options?.mapError
-        ? await PromiseHelpers.mapError(Promise.resolve(result), options.mapError)
-        : await Promise.resolve(result);
+  private buildHelpers(extras: ResultFlowExtras<C>): ResultFlowHelpers<E> {
+    const resolvePolymorphicResult = <A1, E2>(
+      result: PolymorphicResult<A1, E2>,
+    ): Promise<Result<A1, E2>> => {
+      return ResultFlow.isResultFlow<A1, E2>(result)
+        ? result.run(extras)
+        : Promise.resolve(result);
+    };
 
-      if (resolvedResult.isOk()) {
-        return resolvedResult.value;
-      }
+    return {
+      tryTo<A1, E2>(
+        result: Result<A1, E2> | Promise<Result<A1, E2>> | ResultAsync<A1, E2>,
+        options?: {
+          mapError?: (value: E2) => E;
+        },
+      ): Promise<A1> {
+        return options?.mapError
+          ? PromiseHelpers.mapError(Promise.resolve(result), options.mapError).then(unwrap)
+          : Promise.resolve(result).then(unwrap);
+      },
+      async tryToOrRecover<A1, A2>(
+        result: Result<A1, E> | Promise<Result<A1, E>> | ResultAsync<A1, E>,
+        fallback: (error: E) => A2 | Promise<A2>,
+      ): Promise<A1 | A2> {
+        const resolvedResult = await Promise.resolve(result);
 
-      return fallback(resolvedResult.error as E);
-    },
-    fail(error: E): never {
-      // eslint-disable-next-line @spendesk/must-use-result
-      const resultError = N.err(error);
-      throw new ResultInterruption(resultError);
-    },
-    promiseHelpers: PromiseHelpers,
-  };
+        if (resolvedResult.isOk()) {
+          return resolvedResult.value;
+        }
+
+        return fallback(resolvedResult.error);
+      },
+      async tryToOrElse<A1>(
+        result: Result<A1, E> | Promise<Result<A1, E>> | ResultAsync<A1, E>,
+        fallback: (error: E) => PolymorphicResult<A1, E>,
+      ): Promise<A1> {
+        const resolvedResult = await Promise.resolve(result);
+
+        if (resolvedResult.isOk()) {
+          return resolvedResult.value;
+        }
+
+        return unwrap(await resolvePolymorphicResult(fallback(resolvedResult.error)));
+      },
+      fail(error: E): never {
+        // eslint-disable-next-line @spendesk/must-use-result
+        const resultError = N.err(error);
+        throw new ResultInterruption(resultError);
+      },
+      promiseHelpers: PromiseHelpers,
+    };
+  }
 
   static of<A, E, C extends BaseContext = DefaultContext>(
     builderFunction: (helpers: ResultFlowHelpers<E>, extras: ResultFlowExtras<C>) => Promise<A>,
@@ -311,7 +326,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
 
   private async executeWithExtras(extras: ResultFlowExtras<C>): Promise<Result<A, E>> {
     try {
-      return N.ok(await this.runPromise(this.helpers, extras));
+      return N.ok(await this.runPromise(this.buildHelpers(extras), extras));
     } catch (e: unknown) {
       if (e instanceof ResultInterruption) {
         return e.error;

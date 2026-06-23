@@ -852,11 +852,14 @@ tryToOrRecover<A, A2>(
   fallback: (error: E) => A2 | Promise<A2>,
 ): Promise<A | A2>
 
-tryToOrRecover<A, E2, A2>(
-  result: N.Result<A, E2> | Promise<N.Result<A, E2>> | N.ResultAsync<A, E2>,
-  fallback: (error: E) => A2 | Promise<A2>,
-  options: { mapError: (error: E2) => E },
-): Promise<A | A2>
+tryToOrElse<A>(
+  result: N.Result<A, E> | Promise<N.Result<A, E>> | N.ResultAsync<A, E>,
+  fallback: (error: E) =>
+    | ResultFlow<A, E>
+    | N.Result<A, E>
+    | N.ResultAsync<A, E>
+    | Promise<N.Result<A, E>>,
+): Promise<A>
 
 fail(error: E): never
 
@@ -890,6 +893,14 @@ const flow = ResultFlow.of<User, UserError>(async ({ tryTo, tryToOrRecover }) =>
   }));
 
   return tryTo(saveUser(user));
+});
+```
+
+Example with `tryToOrElse`:
+
+```ts
+const flow = ResultFlow.of<User, UserError>(async ({ tryToOrElse }) => {
+  return tryToOrElse(findUser('missing'), () => findDefaultUser());
 });
 ```
 
