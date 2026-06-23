@@ -988,6 +988,18 @@ ResultFlow.gen<A, E, C>(
           | Promise<N.Result<A, E2>>,
         fallback: (error: E2, extras: { context: C; abortSignal?: AbortSignal }) => A2 | Promise<A2>,
       ): ResultFlow<A | A2, never, C>
+      orElse<A, E2, E3>(
+        result:
+          | ResultFlow<A, E2, C>
+          | N.Result<A, E2>
+          | N.ResultAsync<A, E2>
+          | Promise<N.Result<A, E2>>,
+        fallback: (error: E2, extras: { context: C; abortSignal?: AbortSignal }) =>
+          | ResultFlow<A, E3, C>
+          | N.Result<A, E3>
+          | N.ResultAsync<A, E3>
+          | Promise<N.Result<A, E3>>,
+      ): ResultFlow<A, E3, C>
     },
     extras: { context: C; abortSignal?: AbortSignal },
   ) => AsyncGenerator<
@@ -1031,6 +1043,14 @@ const flow = ResultFlow.gen<User, never>(async function* ({ orRecover }) {
     id: 'guest',
     email: 'guest@example.com',
   }));
+});
+```
+
+Example with an inline fallible fallback:
+
+```ts
+const flow = ResultFlow.gen<User, UserError>(async function* ({ orElse }) {
+  return yield* orElse(findUser('missing'), () => findDefaultUser());
 });
 ```
 

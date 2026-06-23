@@ -249,6 +249,50 @@ describe('ResultFlow', () => {
 
       deepEqual(result, N.ok({ id: 0, name: 'test-user-id' }));
     });
+
+    it('should not call orElse fallback when the yielded result succeeds', async () => {
+      const fallback = mock.fn(() => N.ok<Row, UpdateByIdFailure>({ id: 0, name: 'default' }));
+      const resultFlow = ResultFlow.gen<Row, UpdateByIdFailure>(async function* ({ orElse }) {
+        return yield* orElse(findById(1), fallback);
+      });
+
+      const result = await resultFlow.run();
+
+      deepEqual(result, N.ok({ id: 1, name: 'test' }));
+      deepEqual(fallback.mock.callCount(), 0);
+    });
+
+    it('should allow falling back to another yielded result inline with orElse', async () => {
+      const resultFlow = ResultFlow.gen<Row, UpdateByIdFailure>(async function* ({ orElse }) {
+        return yield* orElse(findById(2), () => updateById(1, { name: 'fallback' }));
+      });
+
+      const result = await resultFlow.run();
+
+      deepEqual(result, N.ok({ id: 1, name: 'fallback' }));
+    });
+
+    it('should fail when the orElse fallback result fails', async () => {
+      const resultFlow = ResultFlow.gen<Row, UpdateByIdFailure>(async function* ({ orElse }) {
+        return yield* orElse(findById(2), () => updateById(2, { name: 'fallback' }));
+      });
+
+      const result = await resultFlow.run();
+
+      deepEqual(result, N.err({ reason: 'not-found', operation: 'updateById' }));
+    });
+
+    it('should pass context to orElse fallback functions', async () => {
+      const resultFlow = ResultFlow.gen<Row, never, Context>(async function* ({ orElse }) {
+        return yield* orElse(findById(2), (_error, { context }) =>
+          N.ok<Row, never>({ id: 0, name: context.userId }),
+        );
+      });
+
+      const result = await resultFlow.run({ context });
+
+      deepEqual(result, N.ok({ id: 0, name: 'test-user-id' }));
+    });
   });
 
   describe('run', () => {
