@@ -2801,7 +2801,7 @@ describe('ResultFlow', () => {
       it('should wait according to the retry strategy before retrying', async (context: TestContext) => {
         const setTimeoutMock = context.mock.method(globalThis, 'setTimeout', (callback: () => void) => {
           callback();
-          return 0 as unknown as NodeJS.Timeout;
+          return 0 as unknown as ReturnType<typeof setTimeout>;
         });
         const numberOfFailures = 2;
         const mockAction = mock.fn(
@@ -3122,7 +3122,7 @@ describe('ResultFlow', () => {
     it('should use the immediate delay strategy by default', async (context: TestContext) => {
       const setTimeoutMock = context.mock.method(globalThis, 'setTimeout', (callback: () => void) => {
         callback();
-        return 0 as unknown as NodeJS.Timeout;
+        return 0 as unknown as ReturnType<typeof setTimeout>;
       });
 
       const result = await ResultFlow.from(N.ok('pending'))
@@ -3140,7 +3140,7 @@ describe('ResultFlow', () => {
     it('should wait according to exponentialBackoff delay strategy when provided', async (context: TestContext) => {
       const setTimeoutMock = context.mock.method(globalThis, 'setTimeout', (callback: () => void) => {
         callback();
-        return 0 as unknown as NodeJS.Timeout;
+        return 0 as unknown as ReturnType<typeof setTimeout>;
       });
       let attempt = 0;
 
@@ -3783,7 +3783,7 @@ describe('ResultFlow', () => {
       let intervalCallback: (() => Promise<void>) | undefined;
       context.mock.method(globalThis, 'setInterval', (callback: () => void) => {
         intervalCallback = callback as () => Promise<void>;
-        return 0 as unknown as NodeJS.Timeout;
+        return 0 as unknown as ReturnType<typeof setTimeout>;
       });
       const thrownError = new Error('periodic flow failed');
       const mockOnInterruption = mock.fn();
@@ -3808,7 +3808,7 @@ describe('ResultFlow', () => {
       let intervalCallback: (() => Promise<void>) | undefined;
       context.mock.method(globalThis, 'setInterval', (callback: () => void) => {
         intervalCallback = callback as () => Promise<void>;
-        return 0 as unknown as NodeJS.Timeout;
+        return 0 as unknown as ReturnType<typeof setTimeout>;
       });
       const recoveryError = new Error('recovery action failed');
       const mockOnInterruption = mock.fn();
