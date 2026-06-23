@@ -840,20 +840,38 @@ await flow.run(); // Err('too-small')
 The helpers are:
 
 ```ts
-tryTo<A>(result: N.Result<A, E> | Promise<N.Result<A, E>> | N.ResultAsync<A, E>): Promise<A>
+tryTo<A>(
+  result:
+    | ResultFlow<A, E>
+    | N.Result<A, E>
+    | N.ResultAsync<A, E>
+    | Promise<N.Result<A, E>>,
+): Promise<A>
 
 tryTo<A, E2>(
-  result: N.Result<A, E2> | Promise<N.Result<A, E2>> | N.ResultAsync<A, E2>,
+  result:
+    | ResultFlow<A, E2>
+    | N.Result<A, E2>
+    | N.ResultAsync<A, E2>
+    | Promise<N.Result<A, E2>>,
   options: { mapError: (error: E2) => E },
 ): Promise<A>
 
 tryToOrRecover<A, A2>(
-  result: N.Result<A, E> | Promise<N.Result<A, E>> | N.ResultAsync<A, E>,
+  result:
+    | ResultFlow<A, E>
+    | N.Result<A, E>
+    | N.ResultAsync<A, E>
+    | Promise<N.Result<A, E>>,
   fallback: (error: E) => A2 | Promise<A2>,
 ): Promise<A | A2>
 
 tryToOrElse<A>(
-  result: N.Result<A, E> | Promise<N.Result<A, E>> | N.ResultAsync<A, E>,
+  result:
+    | ResultFlow<A, E>
+    | N.Result<A, E>
+    | N.ResultAsync<A, E>
+    | Promise<N.Result<A, E>>,
   fallback: (error: E) =>
     | ResultFlow<A, E>
     | N.Result<A, E>

@@ -274,6 +274,35 @@ describe('ResultFlow', () => {
       });
     });
 
+    it('should accept a ResultFlow with tryTo', async () => {
+      const nestedFlow = ResultFlow.from(findById(1));
+      const resultFlow = ResultFlow.of<Row, FlowFailure>(async ({ tryTo }) => {
+        return tryTo(nestedFlow);
+      });
+
+      const result = await resultFlow.run();
+
+      deepEqual(result, N.ok({ id: 1, name: 'test' }));
+    });
+
+    it('should map ResultFlow failures with tryTo options', async () => {
+      const nestedFlow = ResultFlow.from(findById(2));
+      const resultFlow = ResultFlow.of<Row, { kind: 'flow-error'; cause: FlowFailure }>(
+        async ({ tryTo }) => {
+          return tryTo(nestedFlow, {
+            mapError: (error) => ({ kind: 'flow-error', cause: error }),
+          });
+        },
+      );
+
+      const result = await resultFlow.run();
+
+      deepEqual(result, N.err({
+        kind: 'flow-error',
+        cause: { reason: 'not-found', operation: 'findById' },
+      }));
+    });
+
     it('should not call tryToOrRecover fallback when the result succeeds', async () => {
       const fallback = mock.fn(() => ({ id: 0, name: 'default' }));
       const resultFlow = ResultFlow.of<Row, FlowFailure>(async ({ tryToOrRecover }) => {
@@ -309,6 +338,17 @@ describe('ResultFlow', () => {
       const result = await resultFlow.run();
 
       deepEqual(result, N.ok(20));
+    });
+
+    it('should recover from a failing ResultFlow with tryToOrRecover', async () => {
+      const nestedFlow = ResultFlow.from(findById(2));
+      const resultFlow = ResultFlow.of<Row, FlowFailure>(async ({ tryToOrRecover }) => {
+        return tryToOrRecover(nestedFlow, () => ({ id: 0, name: 'default' }));
+      });
+
+      const result = await resultFlow.run();
+
+      deepEqual(result, N.ok({ id: 0, name: 'default' }));
     });
 
     it('should reject when tryToOrRecover receives a rejected promise', async () => {
@@ -357,6 +397,17 @@ describe('ResultFlow', () => {
       deepEqual(result, N.err({ reason: 'not-found', operation: 'updateById' }));
     });
 
+    it('should run a fallback when tryToOrElse receives a failing ResultFlow', async () => {
+      const nestedFlow = ResultFlow.from(findById(2));
+      const resultFlow = ResultFlow.of<Row, FlowFailure>(async ({ tryToOrElse }) => {
+        return tryToOrElse(nestedFlow, () => N.ok({ id: 0, name: 'default' }));
+      });
+
+      const result = await resultFlow.run();
+
+      deepEqual(result, N.ok({ id: 0, name: 'default' }));
+    });
+
     it('should run a fallback ResultFlow with the current context', async () => {
       type FallbackContext = { userId: string };
       const fallbackFlow = ResultFlow.of<Row, FlowFailure, FallbackContext>(
@@ -369,6 +420,20 @@ describe('ResultFlow', () => {
       const result = await resultFlow.run({ context: { userId: 'fallback-user' } });
 
       deepEqual(result, N.ok({ id: 0, name: 'fallback-user' }));
+    });
+
+    it('should pass context to a ResultFlow received by tryTo', async () => {
+      type NestedContext = { userId: string };
+      const nestedFlow = ResultFlow.of<Row, FlowFailure, NestedContext>(
+        async (_helpers, { context }) => ({ id: 0, name: context.userId }),
+      );
+      const resultFlow = ResultFlow.of<Row, FlowFailure, NestedContext>(async ({ tryTo }) => {
+        return tryTo(nestedFlow);
+      });
+
+      const result = await resultFlow.run({ context: { userId: 'nested-user' } });
+
+      deepEqual(result, N.ok({ id: 0, name: 'nested-user' }));
     });
 
     it('should return a failure as soon as a function returns a failure result', async () => {

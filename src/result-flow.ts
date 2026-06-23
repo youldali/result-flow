@@ -8,21 +8,21 @@ type DefaultContext = Record<never, never>;
 type BaseContext = Record<string, any>;
 type PolymorphicResult<A, E, C extends BaseContext = DefaultContext> = ResultFlow<A, E, C> | Promise<Result<A, E>> | Result<A, E> | ResultAsync<A, E>;
 
-export interface ResultFlowHelpers<E> {
-  tryTo<A>(result: Result<A, E> | Promise<Result<A, E>> | ResultAsync<A, E>): Promise<A>;
+export interface ResultFlowHelpers<E, C extends BaseContext = DefaultContext> {
+  tryTo<A>(result: PolymorphicResult<A, E, C>): Promise<A>;
   tryTo<A, E2>(
-    result: Result<A, E2> | Promise<Result<A, E2>> | ResultAsync<A, E2>,
+    result: PolymorphicResult<A, E2, C>,
     options: {
       mapError: (value: E2) => E;
     },
   ): Promise<A>;
   tryToOrRecover<A, A2>(
-    result: Result<A, E> | Promise<Result<A, E>> | ResultAsync<A, E>,
+    result: PolymorphicResult<A, E, C>,
     fallback: (error: E) => A2 | Promise<A2>,
   ): Promise<A | A2>;
   tryToOrElse<A>(
-    result: Result<A, E> | Promise<Result<A, E>> | ResultAsync<A, E>,
-    fallback: (error: E) => PolymorphicResult<A, E>,
+    result: PolymorphicResult<A, E, C>,
+    fallback: (error: E) => PolymorphicResult<A, E, C>,
   ): Promise<A>;
   fail(error: E): never;
   promiseHelpers: PromiseHelpers.PromiseHelpers;
@@ -71,7 +71,7 @@ type FlowResults<Flows extends readonly ResultFlow<any, any, any>[]> = {
 };
 
 export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
-  private constructor(private runPromise: (helpers: ResultFlowHelpers<E>, extras: ResultFlowExtras<C>) => Promise<A>) {}
+  private constructor(private runPromise: (helpers: ResultFlowHelpers<E, C>, extras: ResultFlowExtras<C>) => Promise<A>) {}
 
   private static buildExtras<C extends BaseContext>(
     ...args: keyof C extends never
@@ -82,31 +82,33 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     return abortSignal ? { context, abortSignal } : { context };
   }
 
-  private buildHelpers(extras: ResultFlowExtras<C>): ResultFlowHelpers<E> {
+  private buildHelpers(extras: ResultFlowExtras<C>): ResultFlowHelpers<E, C> {
     const resolvePolymorphicResult = <A1, E2>(
-      result: PolymorphicResult<A1, E2>,
+      result: PolymorphicResult<A1, E2, C>,
     ): Promise<Result<A1, E2>> => {
       return ResultFlow.isResultFlow<A1, E2>(result)
         ? result.run(extras)
-        : Promise.resolve(result);
+        : Promise.resolve(result as Result<A1, E2> | Promise<Result<A1, E2>> | ResultAsync<A1, E2>);
     };
 
     return {
       tryTo<A1, E2>(
-        result: Result<A1, E2> | Promise<Result<A1, E2>> | ResultAsync<A1, E2>,
+        result: PolymorphicResult<A1, E2, C>,
         options?: {
           mapError?: (value: E2) => E;
         },
       ): Promise<A1> {
+        const resolvedResult = resolvePolymorphicResult(result);
+
         return options?.mapError
-          ? PromiseHelpers.mapError(Promise.resolve(result), options.mapError).then(unwrap)
-          : Promise.resolve(result).then(unwrap);
+          ? PromiseHelpers.mapError(resolvedResult, options.mapError).then(unwrap)
+          : resolvedResult.then(unwrap);
       },
       async tryToOrRecover<A1, A2>(
-        result: Result<A1, E> | Promise<Result<A1, E>> | ResultAsync<A1, E>,
+        result: PolymorphicResult<A1, E, C>,
         fallback: (error: E) => A2 | Promise<A2>,
       ): Promise<A1 | A2> {
-        const resolvedResult = await Promise.resolve(result);
+        const resolvedResult = await resolvePolymorphicResult(result);
 
         if (resolvedResult.isOk()) {
           return resolvedResult.value;
@@ -115,10 +117,10 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
         return fallback(resolvedResult.error);
       },
       async tryToOrElse<A1>(
-        result: Result<A1, E> | Promise<Result<A1, E>> | ResultAsync<A1, E>,
-        fallback: (error: E) => PolymorphicResult<A1, E>,
+        result: PolymorphicResult<A1, E, C>,
+        fallback: (error: E) => PolymorphicResult<A1, E, C>,
       ): Promise<A1> {
-        const resolvedResult = await Promise.resolve(result);
+        const resolvedResult = await resolvePolymorphicResult(result);
 
         if (resolvedResult.isOk()) {
           return resolvedResult.value;
@@ -136,7 +138,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
   }
 
   static of<A, E, C extends BaseContext = DefaultContext>(
-    builderFunction: (helpers: ResultFlowHelpers<E>, extras: ResultFlowExtras<C>) => Promise<A>,
+    builderFunction: (helpers: ResultFlowHelpers<E, C>, extras: ResultFlowExtras<C>) => Promise<A>,
   ): ResultFlow<A, E, C> {
     return new ResultFlow<A, E, C>(builderFunction);
   }
