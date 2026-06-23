@@ -33,7 +33,7 @@ export interface ResultFlowGenHelpers<C extends BaseContext = DefaultContext> {
     result: PolymorphicResult<A, E, C>,
     fallback: (error: E, extras: ResultFlowExtras<C>) => A2 | Promise<A2>,
   ): ResultFlow<A | A2, never, C>;
-  orElse<A, E, E2 = never>(
+  orElse<A, E, E2>(
     result: PolymorphicResult<A, E, C>,
     fallback: (error: E, extras: ResultFlowExtras<C>) => PolymorphicResult<A, E2, C>,
   ): ResultFlow<A, E2, C>;
@@ -159,7 +159,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
           ? result.recover(fallback)
           : ResultFlow.from<A, E, C>(result).recover(fallback);
       },
-      orElse<A, E, E2 = never>(
+      orElse<A, E, E2>(
         result: PolymorphicResult<A, E, C>,
         fallback: (error: E, extras: ResultFlowExtras<C>) => PolymorphicResult<A, E2, C>,
       ): ResultFlow<A, E2, C> {
