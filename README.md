@@ -1043,6 +1043,7 @@ ResultFlow.gen<A, E, C>(
           | N.ResultAsync<A, E3>
           | Promise<N.Result<A, E3>>,
       ): ResultFlow<A, E3, C>
+      fail(error: E): never
     },
     extras: { context: C; abortSignal?: AbortSignal },
   ) => AsyncGenerator<

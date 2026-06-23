@@ -28,15 +28,16 @@ export interface ResultFlowHelpers<E, C extends BaseContext = DefaultContext> {
   promiseHelpers: PromiseHelpers.PromiseHelpers;
 }
 
-export interface ResultFlowGenHelpers<C extends BaseContext = DefaultContext> {
-  orRecover<A, E, A2>(
-    result: PolymorphicResult<A, E, C>,
-    fallback: (error: E, extras: ResultFlowExtras<C>) => A2 | Promise<A2>,
+export interface ResultFlowGenHelpers<E, C extends BaseContext = DefaultContext> {
+  orRecover<A, E2, A2>(
+    result: PolymorphicResult<A, E2, C>,
+    fallback: (error: E2, extras: ResultFlowExtras<C>) => A2 | Promise<A2>,
   ): ResultFlow<A | A2, never, C>;
-  orElse<A, E, E2>(
-    result: PolymorphicResult<A, E, C>,
-    fallback: (error: E, extras: ResultFlowExtras<C>) => PolymorphicResult<A, E2, C>,
-  ): ResultFlow<A, E2, C>;
+  orElse<A, E2, E3>(
+    result: PolymorphicResult<A, E2, C>,
+    fallback: (error: E2, extras: ResultFlowExtras<C>) => PolymorphicResult<A, E3, C>,
+  ): ResultFlow<A, E3, C>;
+  fail(error: E): never;
 }
 
 const unwrap = <A, E>(result: Result<A, E>): A => {
@@ -149,23 +150,28 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     };
   }
 
-  private static buildGenHelpers<C extends BaseContext>(): ResultFlowGenHelpers<C> {
+  private static buildGenHelpers<E, C extends BaseContext>(): ResultFlowGenHelpers<E, C> {
     return {
-      orRecover<A, E, A2>(
-        result: PolymorphicResult<A, E, C>,
-        fallback: (error: E, extras: ResultFlowExtras<C>) => A2 | Promise<A2>,
+      orRecover<A, E2, A2>(
+        result: PolymorphicResult<A, E2, C>,
+        fallback: (error: E2, extras: ResultFlowExtras<C>) => A2 | Promise<A2>,
       ): ResultFlow<A | A2, never, C> {
-        return ResultFlow.isResultFlow<A, E, C>(result)
+        return ResultFlow.isResultFlow<A, E2, C>(result)
           ? result.recover(fallback)
-          : ResultFlow.from<A, E, C>(result).recover(fallback);
+          : ResultFlow.from<A, E2, C>(result).recover(fallback);
       },
-      orElse<A, E, E2>(
-        result: PolymorphicResult<A, E, C>,
-        fallback: (error: E, extras: ResultFlowExtras<C>) => PolymorphicResult<A, E2, C>,
-      ): ResultFlow<A, E2, C> {
-        return ResultFlow.isResultFlow<A, E, C>(result)
+      orElse<A, E2, E3>(
+        result: PolymorphicResult<A, E2, C>,
+        fallback: (error: E2, extras: ResultFlowExtras<C>) => PolymorphicResult<A, E3, C>,
+      ): ResultFlow<A, E3, C> {
+        return ResultFlow.isResultFlow<A, E2, C>(result)
           ? result.orElse(fallback)
-          : ResultFlow.from<A, E, C>(result).orElse(fallback);
+          : ResultFlow.from<A, E2, C>(result).orElse(fallback);
+      },
+      fail(error: E): never {
+        // eslint-disable-next-line @spendesk/must-use-result
+        const resultError = N.err(error);
+        throw new ResultInterruption(resultError);
       },
     };
   }
@@ -663,9 +669,9 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     }
   }
 
-  static gen<A, E, C extends BaseContext = DefaultContext>(f: ((helpers: ResultFlowGenHelpers<C>, extras: ResultFlowExtras<C>) => AsyncGenerator<YieldableResultFlow<any, E, C> | Result<any, E> | ResultAsync<any, E>, A, any> )): ResultFlow<A, E, C> {
+  static gen<A, E, C extends BaseContext = DefaultContext>(f: ((helpers: ResultFlowGenHelpers<E, C>, extras: ResultFlowExtras<C>) => AsyncGenerator<YieldableResultFlow<any, E, C> | Result<any, E> | ResultAsync<any, E>, A, any> )): ResultFlow<A, E, C> {
     return ResultFlow.of<A, E, C>(async ({ tryTo }, extras) => {
-      const generator = f(ResultFlow.buildGenHelpers<C>(), extras);
+      const generator = f(ResultFlow.buildGenHelpers<E, C>(), extras);
       let result = await generator.next();
       while (!result.done) {
         const value = await (ResultFlow.isResultFlow<any, E, C | DefaultContext>(result.value) ? tryTo(result.value.run(extras)) : tryTo(result.value as Result<any, E> | ResultAsync<any, E>));

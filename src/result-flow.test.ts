@@ -151,6 +151,20 @@ describe('ResultFlow', () => {
       deepEqual(mockFn.mock.callCount(), 0);
     });
 
+    it('should allow failing a generator flow with fail', async () => {
+      const mockFn = mock.fn();
+      const resultFlow = ResultFlow.gen<Row, FlowFailure>(async function* ({ fail }) {
+        fail({ reason: 'not-found', operation: 'findById' });
+        mockFn();
+        return yield* ResultFlow.lift(findById(1));
+      });
+
+      const result = await resultFlow.run();
+
+      deepEqual(result, N.err({ reason: 'not-found', operation: 'findById' }));
+      deepEqual(mockFn.mock.callCount(), 0);
+    });
+
     it('should return a rejected promise if a function throws', async () => {
       const resultFlow = ResultFlow.gen(async function* () {
         yield* ResultFlow.lift(Promise.reject(new Error('error description')));
