@@ -369,7 +369,7 @@ describe('ResultFlow', () => {
     });
 
     it('should accept a ResultFlow with tryTo', async () => {
-      const nestedFlow = ResultFlow.from(findById(1));
+      const nestedFlow = ResultFlow.from<Row, FlowFailure>(findById(1));
       const resultFlow = ResultFlow.of<Row, FlowFailure>(async ({ tryTo }) => {
         return tryTo(nestedFlow);
       });
@@ -380,7 +380,7 @@ describe('ResultFlow', () => {
     });
 
     it('should map ResultFlow failures with tryTo options', async () => {
-      const nestedFlow = ResultFlow.from(findById(2));
+      const nestedFlow = ResultFlow.from<Row, FindByIdFailure>(findById(2));
       const resultFlow = ResultFlow.of<Row, { kind: 'flow-error'; cause: FlowFailure }>(
         async ({ tryTo }) => {
           return tryTo(nestedFlow, {
@@ -410,7 +410,7 @@ describe('ResultFlow', () => {
     });
 
     it('should recover from a failure with tryToOrRecover', async () => {
-      const fallback = mock.fn((error: FindByIdFailure) => ({
+      const fallback = mock.fn((error: FlowFailure) => ({
         id: 0,
         name: `${error.operation}-default`,
       }));
@@ -435,7 +435,7 @@ describe('ResultFlow', () => {
     });
 
     it('should recover from a failing ResultFlow with tryToOrRecover', async () => {
-      const nestedFlow = ResultFlow.from(findById(2));
+      const nestedFlow = ResultFlow.from<Row, FlowFailure>(findById(2));
       const resultFlow = ResultFlow.of<Row, FlowFailure>(async ({ tryToOrRecover }) => {
         return tryToOrRecover(nestedFlow, () => ({ id: 0, name: 'default' }));
       });
@@ -468,7 +468,7 @@ describe('ResultFlow', () => {
     });
 
     it('should run a fallback Result with tryToOrElse when the result fails', async () => {
-      const fallback = mock.fn((error: FindByIdFailure) => {
+      const fallback = mock.fn((error: FlowFailure) => {
         return N.ok<Row, FlowFailure>({ id: 0, name: `${error.operation}-fallback` });
       });
       const resultFlow = ResultFlow.of<Row, FlowFailure>(async ({ tryToOrElse }) => {
@@ -492,7 +492,7 @@ describe('ResultFlow', () => {
     });
 
     it('should run a fallback when tryToOrElse receives a failing ResultFlow', async () => {
-      const nestedFlow = ResultFlow.from(findById(2));
+      const nestedFlow = ResultFlow.from<Row, FlowFailure>(findById(2));
       const resultFlow = ResultFlow.of<Row, FlowFailure>(async ({ tryToOrElse }) => {
         return tryToOrElse(nestedFlow, () => N.ok({ id: 0, name: 'default' }));
       });

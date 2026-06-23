@@ -59,25 +59,26 @@ type YieldableResultFlow<A, E, C extends BaseContext> = {
       : [ResultFlowRunParams<C>]
   ): Promise<Result<A, E>>;
 };
-type FlowSuccess<F> = F extends ResultFlow<infer A, any, any> ? A : never;
-type FlowError<F> = F extends ResultFlow<any, infer E, any> ? E : never;
-type FlowContext<F> = F extends ResultFlow<any, any, infer C> ? C : never;
-type FlowSuccesses<Flows extends readonly ResultFlow<any, any, any>[]> = FlowSuccess<Flows[number]>;
-type FlowErrors<Flows extends readonly ResultFlow<any, any, any>[]> = FlowError<Flows[number]>;
-type FlowErrorArray<Flows extends readonly ResultFlow<any, any, any>[]> = FlowErrors<Flows>[];
-type FlowResult<F> = F extends ResultFlow<infer A, infer E, any> ? Result<A, E> : never;
+type AnyYieldableResultFlow = YieldableResultFlow<any, any, any>;
+type FlowSuccess<F> = F extends YieldableResultFlow<infer A, any, any> ? A : never;
+type FlowError<F> = F extends YieldableResultFlow<any, infer E, any> ? E : never;
+type FlowContext<F> = F extends YieldableResultFlow<any, any, infer C> ? C : never;
+type FlowSuccesses<Flows extends readonly AnyYieldableResultFlow[]> = FlowSuccess<Flows[number]>;
+type FlowErrors<Flows extends readonly AnyYieldableResultFlow[]> = FlowError<Flows[number]>;
+type FlowErrorArray<Flows extends readonly AnyYieldableResultFlow[]> = FlowErrors<Flows>[];
+type FlowResult<F> = F extends YieldableResultFlow<infer A, infer E, any> ? Result<A, E> : never;
 type NormalizeContext<C> = IsAny<C> extends true
   ? DefaultContext
   : C extends BaseContext
     ? C
     : DefaultContext;
-type FlowContexts<Flows extends readonly ResultFlow<any, any, any>[]> = NormalizeContext<
+type FlowContexts<Flows extends readonly AnyYieldableResultFlow[]> = NormalizeContext<
   UnionToIntersection<FlowContext<Flows[number]>>
 >;
-type FlowValues<Flows extends readonly ResultFlow<any, any, any>[]> = {
+type FlowValues<Flows extends readonly AnyYieldableResultFlow[]> = {
   [K in keyof Flows]: FlowSuccess<Flows[K]>;
 };
-type FlowResults<Flows extends readonly ResultFlow<any, any, any>[]> = {
+type FlowResults<Flows extends readonly AnyYieldableResultFlow[]> = {
   [K in keyof Flows]: FlowResult<Flows[K]>;
 };
 
@@ -205,7 +206,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     return ResultFlow.from(value);
   }
 
-  static all<const Flows extends readonly ResultFlow<any, any, any>[]>(
+  static all<const Flows extends readonly AnyYieldableResultFlow[]>(
     flows: Flows,
   ): ResultFlow<
     FlowValues<Flows>,
@@ -218,7 +219,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
       FlowContexts<Flows>
     >(async ({ tryTo }, extras) => {
       const values: unknown[] = [];
-      const flowsToRun = flows as readonly ResultFlow<
+      const flowsToRun = flows as readonly YieldableResultFlow<
         unknown,
         FlowErrors<Flows>,
         FlowContexts<Flows>
@@ -232,7 +233,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     });
   }
 
-  static allSettled<const Flows extends readonly ResultFlow<any, any, any>[]>(
+  static allSettled<const Flows extends readonly AnyYieldableResultFlow[]>(
     flows: Flows,
   ): ResultFlow<
     FlowResults<Flows>,
@@ -244,7 +245,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
       never,
       FlowContexts<Flows>
     >(async (_helpers, extras) => {
-      const flowsToRun = flows as readonly ResultFlow<
+      const flowsToRun = flows as readonly YieldableResultFlow<
         unknown,
         FlowErrors<Flows>,
         FlowContexts<Flows>
@@ -266,7 +267,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     });
   }
 
-  static firstOk<const Flows extends readonly ResultFlow<any, any, any>[]>(
+  static firstOk<const Flows extends readonly AnyYieldableResultFlow[]>(
     flows: Flows,
   ): ResultFlow<
     FlowSuccesses<Flows>,
@@ -283,7 +284,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
       }
 
       const errors: FlowErrors<Flows>[] = [];
-      const flowsToRun = flows as readonly ResultFlow<
+      const flowsToRun = flows as readonly YieldableResultFlow<
         FlowSuccesses<Flows>,
         FlowErrors<Flows>,
         FlowContexts<Flows>
@@ -303,7 +304,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     });
   }
 
-  static race<const Flows extends readonly ResultFlow<any, any, any>[]>(
+  static race<const Flows extends readonly AnyYieldableResultFlow[]>(
     flows: Flows,
   ): ResultFlow<
     FlowSuccesses<Flows>,
@@ -319,7 +320,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
         throw new Error('ResultFlow.race requires at least one flow');
       }
 
-      const flowsToRun = flows as readonly ResultFlow<
+      const flowsToRun = flows as readonly YieldableResultFlow<
         FlowSuccesses<Flows>,
         FlowErrors<Flows>,
         FlowContexts<Flows>
