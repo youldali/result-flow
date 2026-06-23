@@ -1,3 +1,5 @@
+/// <reference types="node" />
+
 import { deepEqual, fail, rejects, strictEqual } from 'node:assert';
 
 import { describe, it, mock, type Mock, type TestContext } from 'node:test';
@@ -216,9 +218,9 @@ describe('ResultFlow', () => {
     });
 
     it('should not call orRecover fallback when the yielded result succeeds', async () => {
-      const fallback = mock.fn(() => ({ id: 0, name: 'default' }));
+      const fallback = mock.fn((_error: FindByIdFailure): Row => ({ id: 0, name: 'default' }));
       const resultFlow = ResultFlow.gen<Row, FlowFailure>(async function* ({ orRecover }) {
-        return yield* orRecover(findById(1), fallback);
+        return yield* orRecover<Row, FindByIdFailure, Row>(findById(1), fallback);
       });
 
       const result = await resultFlow.run();
@@ -1119,7 +1121,7 @@ describe('ResultFlow', () => {
     it('should start every flow in parallel while preserving result order', async () => {
       const first = createDeferred<Result<string, never>>();
       const second = createDeferred<Result<string, never>>();
-      const started = mock.fn();
+      const started: Mock<(flowName: 'first' | 'second') => void> = mock.fn();
 
       const resultPromise = ResultFlow.allSettled([
         ResultFlow.from(() => {
@@ -1132,7 +1134,10 @@ describe('ResultFlow', () => {
         }),
       ] as const).run();
 
-      deepEqual(started.mock.calls.map((call) => call.arguments[0]), ['first', 'second']);
+      deepEqual(
+        started.mock.calls.map((call: { arguments: ['first' | 'second'] }) => call.arguments[0]),
+        ['first', 'second'],
+      );
 
       second.resolve(N.ok('second'));
       first.resolve(N.ok('first'));
@@ -1465,7 +1470,7 @@ describe('ResultFlow', () => {
     it('should start all flows when the returned flow is run', async () => {
       const first = createDeferred<number>();
       const second = createDeferred<number>();
-      const started = mock.fn();
+      const started: Mock<(flowName: 'first' | 'second') => void> = mock.fn();
 
       const resultPromise = ResultFlow.race([
         ResultFlow.of<number, never>(async () => {
@@ -1478,7 +1483,10 @@ describe('ResultFlow', () => {
         }),
       ]).run();
 
-      deepEqual(started.mock.calls.map((call) => call.arguments[0]), ['first', 'second']);
+      deepEqual(
+        started.mock.calls.map((call: { arguments: ['first' | 'second'] }) => call.arguments[0]),
+        ['first', 'second'],
+      );
 
       first.resolve(1);
       deepEqual(await resultPromise, N.ok(1));
@@ -2846,14 +2854,14 @@ describe('ResultFlow', () => {
       it('should retry the operation only when the condition is satisfied', async () => {
         const n = 5;
         const numberOfVersionError = 2;
-        const mockAction = mock.fn(
+        const mockAction: Mock<() => Result<number, string>> = mock.fn(
           () => N.err(defaultError),
           () => N.err(versionError),
           { times: numberOfVersionError },
         );
         const beforeRetryMock = mock.fn();
         const condition = (error: string) => error === versionError;
-        const resultFlow = ResultFlow.from(mockAction).retryPolicy({
+        const resultFlow = ResultFlow.from<number, string>(mockAction).retryPolicy({
           maxRetries: n,
           beforeRetry: beforeRetryMock,
           condition,
@@ -2872,10 +2880,10 @@ describe('ResultFlow', () => {
 
       it('should stop retrying when we have a success', async () => {
         const n = 5;
-        const mockAction = mock.fn(() => N.ok(success));
+        const mockAction: Mock<() => Result<number, string>> = mock.fn(() => N.ok(success));
         const beforeRetryMock = mock.fn();
         const condition = (error: string) => error === versionError;
-        const resultFlow = ResultFlow.from(mockAction).retryPolicy({
+        const resultFlow = ResultFlow.from<number, string>(mockAction).retryPolicy({
           maxRetries: n,
           beforeRetry: beforeRetryMock,
           condition,
@@ -3038,7 +3046,7 @@ describe('ResultFlow', () => {
     it('should call onExhausted(lastValue, extras) and return its error when repeats are exhausted', async () => {
       let attempt = 0;
       const onExhausted: Mock<(lastValue: string, extras: { context: Record<never, never> }) => { reason: 'not-ready'; lastValue: string }> = mock.fn(
-        (lastValue) => ({ reason: 'not-ready', lastValue }),
+        (lastValue: string) => ({ reason: 'not-ready', lastValue }),
       );
 
       const result = await ResultFlow.from<string, never>(() => {
@@ -3104,7 +3112,7 @@ describe('ResultFlow', () => {
     });
 
     it('should call beforeRepeat before each repeat with repeat numbers starting at 1', async () => {
-      const beforeRepeat = mock.fn();
+      const beforeRepeat: Mock<(value: string, repeatNumber: number) => void> = mock.fn();
 
       await ResultFlow.from(N.ok('pending'))
         .repeatUntil({
@@ -3116,7 +3124,10 @@ describe('ResultFlow', () => {
         .run();
 
       deepEqual(beforeRepeat.mock.callCount(), 3);
-      deepEqual(beforeRepeat.mock.calls.map((call) => call.arguments[1]), [1, 2, 3]);
+      deepEqual(
+        beforeRepeat.mock.calls.map((call: { arguments: [string, number] }) => call.arguments[1]),
+        [1, 2, 3],
+      );
     });
 
     it('should use the immediate delay strategy by default', async (testContext: TestContext) => {
