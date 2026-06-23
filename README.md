@@ -4,7 +4,7 @@
 
 That lazy execution model makes it possible to extend `neverthrow` workflows with behavior such as retries, polling, periodic execution, timeouts, and context passing. A flow stops on the first `Err`, returns that error from `run()`, and skips the remaining success path.
 
-`ResultFlow` has no bundled runtime dependencies. `neverthrow` is a required peer dependency, so install it alongside `result-flow`.
+`ResultFlow` has no bundled runtime dependencies. `neverthrow` is a required peer dependency, so install it alongside `@youldali/result-flow`.
 
 ## Table Of Contents
 
@@ -19,6 +19,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
   - [Failures Vs Exceptions](#failures-vs-exceptions)
   - [Context](#context)
 - [Recipes](#recipes)
+  - [Choose Between Of And Gen](#choose-between-of-and-gen)
   - [Chain Operations And Stop On First Failure](#chain-operations-and-stop-on-first-failure)
   - [Pipe Values With Chain](#pipe-values-with-chain)
   - [Validate A Success Value](#validate-a-success-value)
@@ -95,7 +96,7 @@ You can already work with those values directly in `neverthrow`. The main reason
 That means you can build a flow, add behavior around it, and decide when it executes:
 
 ```ts
-import { ResultFlow } from 'result-flow';
+import { ResultFlow } from '@youldali/result-flow';
 
 const flow = ResultFlow.of<User, UserError>(async ({ tryTo }) => {
   const user = await tryTo(findUser('user-1'));
@@ -113,10 +114,10 @@ The success path stays linear. The failure path stays typed. The work does not s
 ## Installation
 
 ```sh
-npm install result-flow neverthrow
+npm install @youldali/result-flow neverthrow
 ```
 
-`result-flow` is dependency-free at runtime except for its required `neverthrow` peer dependency. Installing both packages keeps `neverthrow` explicit in your application and avoids pulling extra transitive dependencies into your runtime.
+`@youldali/result-flow` is dependency-free at runtime except for its required `neverthrow` peer dependency. Installing both packages keeps `neverthrow` explicit in your application and avoids pulling extra transitive dependencies into your runtime.
 
 ## Quick Start
 
@@ -124,7 +125,7 @@ npm install result-flow neverthrow
 
 ```ts
 import { type Result, type ResultAsync } from 'neverthrow';
-import { ResultFlow } from 'result-flow';
+import { ResultFlow } from '@youldali/result-flow';
 
 type User = { id: string; email: string };
 type UserError = 'not-found' | 'invalid-email' | 'save-failed';
@@ -192,6 +193,24 @@ Aliases:
 ## Choosing Related Methods
 
 Some methods are intentionally close to each other. The difference is what signal they react to and whether they return one final `Result`.
+
+### Constructing Imperative Flows
+
+`ResultFlow.of` and `ResultFlow.gen` are equivalent constructors for writing a flow in an imperative style while keeping typed failures, lazy execution, retries, context, and other `ResultFlow` behavior.
+
+They are similar in spirit to do notation in Haskell: each step reads like ordinary sequential code, but an `Err` still stops the flow and becomes the final result.
+
+| Method | Style | Use When |
+| --- | --- | --- |
+| `ResultFlow.of` | Regular `async` function. Use `await tryTo(...)` to unwrap `Ok` values and stop on `Err`. | You want familiar TypeScript control flow, or you want helpers such as `tryTo`, `tryToOrRecover`, `tryToOrElse`... |
+| `ResultFlow.gen` | Async generator. Use `yield* resultLike` to unwrap `Ok` values and stop on `Err`. | You prefer lighter syntax for result-producing steps, or you want generator helpers such as `orRecover` and `orElse`. |
+
+In short:
+
+```text
+of  -> await tryTo(step())
+gen -> yield* step()
+```
 
 ### Running Flows
 
@@ -348,13 +367,37 @@ await flow.run({ context: { requestId: 'req-123' } });
 
 ## Recipes
 
+### Choose Between Of And Gen
+
+Use `ResultFlow.of` when you want a normal `async` function body. Helpers such as `tryTo` extract the value inside an `Ok`, and stop the flow with the `Err` when the result is a failure.
+
+```ts
+const result = await ResultFlow.of<User, UserError>(async ({ tryTo }) => {
+  const user = await tryTo(findUser('user-1'));
+  const validUser = await tryTo(validateEmail(user));
+  return tryTo(saveUser(validUser));
+}).run();
+```
+
+Use `ResultFlow.gen` when you prefer generator syntax. Instead of `await tryTo(...)`, you directly `yield*` the `Result`, `ResultAsync`, or `ResultFlow`. The generator also receives helpers for inline recovery and fallible fallbacks.
+
+```ts
+const result = await ResultFlow.gen<User, UserError>(async function* () {
+  const user = yield* findUser('user-1');
+  const validUser = yield* validateEmail(user);
+  return yield* saveUser(validUser);
+}).run();
+```
+
+Both examples are equivalent. They return `Promise<Result<User, UserError>>`, do not execute until `run()` is called, and stop on the first `Err`.
+
 ### Chain Operations And Stop On First Failure
 
 Use `ResultFlow.of` with `tryTo` when you want an `async` function body.
 
 ```ts
 import { type Result, type ResultAsync } from 'neverthrow';
-import { ResultFlow } from 'result-flow';
+import { ResultFlow } from '@youldali/result-flow';
 
 type User = { id: string; email: string };
 type UserError = 'not-found' | 'invalid-email' | 'save-failed';
