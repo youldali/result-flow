@@ -160,7 +160,7 @@ describe('ResultFlow', () => {
 
     it('should be able to access the context', async () => {
       const mockFn = mock.fn();
-      await ResultFlow.gen<number, Error, Context>(async function* ({ context }: ResultFlowExtras<Context>) {
+      await ResultFlow.gen<number, Error, Context>(async function* (_helpers, { context }: ResultFlowExtras<Context>) {
         const a = yield* N.okAsync(5);
         const b = yield* N.okAsync(10);
         mockFn(context);
@@ -198,6 +198,56 @@ describe('ResultFlow', () => {
       });
 
       deepEqual(result, N.ok('test-user-id:19'));
+    });
+
+    it('should allow recovering a yielded result inline with orRecover', async () => {
+      const resultFlow = ResultFlow.gen<Row, FlowFailure>(async function* ({ orRecover }) {
+        const row = yield* orRecover(findById(2), (error) => ({
+          id: 0,
+          name: `${error.operation}-default`,
+        }));
+
+        return row;
+      });
+
+      const result = await resultFlow.run();
+
+      deepEqual(result, N.ok({ id: 0, name: 'findById-default' }));
+    });
+
+    it('should not call orRecover fallback when the yielded result succeeds', async () => {
+      const fallback = mock.fn(() => ({ id: 0, name: 'default' }));
+      const resultFlow = ResultFlow.gen<Row, FlowFailure>(async function* ({ orRecover }) {
+        return yield* orRecover(findById(1), fallback);
+      });
+
+      const result = await resultFlow.run();
+
+      deepEqual(result, N.ok({ id: 1, name: 'test' }));
+      deepEqual(fallback.mock.callCount(), 0);
+    });
+
+    it('should support async orRecover fallback functions', async () => {
+      const resultFlow = ResultFlow.gen<number, never>(async function* ({ orRecover }) {
+        return yield* orRecover(N.err<number, 'error'>('error'), async () => 20);
+      });
+
+      const result = await resultFlow.run();
+
+      deepEqual(result, N.ok(20));
+    });
+
+    it('should pass context to orRecover fallback functions', async () => {
+      const resultFlow = ResultFlow.gen<Row, never, Context>(async function* ({ orRecover }) {
+        return yield* orRecover(findById(2), (_error, { context }) => ({
+          id: 0,
+          name: context.userId,
+        }));
+      });
+
+      const result = await resultFlow.run({ context });
+
+      deepEqual(result, N.ok({ id: 0, name: 'test-user-id' }));
     });
   });
 
@@ -524,7 +574,7 @@ describe('ResultFlow', () => {
 
     it('should be able to access the context', async () => {
       const mockFn = mock.fn();
-      await ResultFlow.gen<number, Error, Context>(async function* ({ context }: { context: Context }) {
+      await ResultFlow.gen<number, Error, Context>(async function* (_helpers, { context }: { context: Context }) {
         const a = yield* N.okAsync(5);
         const b = yield* N.okAsync(10);
         mockFn(context);

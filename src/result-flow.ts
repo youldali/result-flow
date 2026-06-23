@@ -28,6 +28,13 @@ export interface ResultFlowHelpers<E, C extends BaseContext = DefaultContext> {
   promiseHelpers: PromiseHelpers.PromiseHelpers;
 }
 
+export interface ResultFlowGenHelpers<C extends BaseContext = DefaultContext> {
+  orRecover<A, E, A2>(
+    result: PolymorphicResult<A, E, C>,
+    fallback: (error: E, extras: ResultFlowExtras<C>) => A2 | Promise<A2>,
+  ): ResultFlow<A | A2, never, C>;
+}
+
 const unwrap = <A, E>(result: Result<A, E>): A => {
   if (result.isOk()) {
     return result.value;
@@ -134,6 +141,19 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
         throw new ResultInterruption(resultError);
       },
       promiseHelpers: PromiseHelpers,
+    };
+  }
+
+  private static buildGenHelpers<C extends BaseContext>(): ResultFlowGenHelpers<C> {
+    return {
+      orRecover<A, E, A2>(
+        result: PolymorphicResult<A, E, C>,
+        fallback: (error: E, extras: ResultFlowExtras<C>) => A2 | Promise<A2>,
+      ): ResultFlow<A | A2, never, C> {
+        return ResultFlow.isResultFlow<A, E, C>(result)
+          ? result.recover(fallback)
+          : ResultFlow.from<A, E, C>(result).recover(fallback);
+      },
     };
   }
 
@@ -630,9 +650,9 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     }
   }
 
-  static gen<A, E, C extends BaseContext = DefaultContext>(f: ((extras: ResultFlowExtras<C>) => AsyncGenerator<YieldableResultFlow<unknown, E, C> | Result<unknown, E> | ResultAsync<unknown, E>, A, unknown> )): ResultFlow<A, E, C> {
+  static gen<A, E, C extends BaseContext = DefaultContext>(f: ((helpers: ResultFlowGenHelpers<C>, extras: ResultFlowExtras<C>) => AsyncGenerator<YieldableResultFlow<unknown, E, C> | Result<unknown, E> | ResultAsync<unknown, E>, A, unknown> )): ResultFlow<A, E, C> {
     return ResultFlow.of<A, E, C>(async ({ tryTo }, extras) => {
-      const generator = f(extras);
+      const generator = f(ResultFlow.buildGenHelpers<C>(), extras);
       let result = await generator.next();
       while (!result.done) {
         const value = await (ResultFlow.isResultFlow<unknown, E, C | DefaultContext>(result.value) ? tryTo(result.value.run(extras)) : tryTo(result.value as Result<unknown, E> | ResultAsync<unknown, E>));

@@ -978,8 +978,20 @@ Creates a flow from an async generator. Inside the generator, use `yield*` with 
 
 ```ts
 ResultFlow.gen<A, E, C>(
-  generator: (extras: { context: C; abortSignal?: AbortSignal }) => AsyncGenerator<
-    ResultFlow<unknown, E, Partial<C>> | N.Result<unknown, E> | N.ResultAsync<unknown, E>,
+  generator: (
+    helpers: {
+      orRecover<A, E2, A2>(
+        result:
+          | ResultFlow<A, E2, C>
+          | N.Result<A, E2>
+          | N.ResultAsync<A, E2>
+          | Promise<N.Result<A, E2>>,
+        fallback: (error: E2, extras: { context: C; abortSignal?: AbortSignal }) => A2 | Promise<A2>,
+      ): ResultFlow<A | A2, never, C>
+    },
+    extras: { context: C; abortSignal?: AbortSignal },
+  ) => AsyncGenerator<
+    ResultFlow<unknown, E, C> | N.Result<unknown, E> | N.ResultAsync<unknown, E>,
     A,
     unknown
   >,
@@ -1003,12 +1015,23 @@ Example with context:
 ```ts
 type Context = { multiplier: number };
 
-const flow = ResultFlow.gen<number, never, Context>(async function* ({ context }) {
+const flow = ResultFlow.gen<number, never, Context>(async function* (_helpers, { context }) {
   const value = yield* N.ok(10);
   return value * context.multiplier;
 });
 
 await flow.run({ context: { multiplier: 3 } }); // Ok(30)
+```
+
+Example with inline recovery:
+
+```ts
+const flow = ResultFlow.gen<User, never>(async function* ({ orRecover }) {
+  return yield* orRecover(findUser('missing'), () => ({
+    id: 'guest',
+    email: 'guest@example.com',
+  }));
+});
 ```
 
 ### `ResultFlow.all`
