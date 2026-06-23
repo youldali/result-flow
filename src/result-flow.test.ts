@@ -57,8 +57,8 @@ function createDeferred<T>() {
   return { promise, resolve, reject };
 }
 
-const advanceToNextTick = async (context: TestContext) => {
-  context.mock.timers.runAll();
+const advanceToNextTick = async (testContext: TestContext) => {
+  testContext.mock.timers.runAll();
   await sleep(0);
 };
 
@@ -2798,8 +2798,8 @@ describe('ResultFlow', () => {
         deepEqual(result._unsafeUnwrapErr(), defaultError);
       });
 
-      it('should wait according to the retry strategy before retrying', async (context: TestContext) => {
-        const setTimeoutMock = context.mock.method(globalThis, 'setTimeout', (callback: () => void) => {
+      it('should wait according to the retry strategy before retrying', async (testContext: TestContext) => {
+        const setTimeoutMock = testContext.mock.method(globalThis, 'setTimeout', (callback: () => void) => {
           callback();
           return 0 as unknown as ReturnType<typeof setTimeout>;
         });
@@ -3119,8 +3119,8 @@ describe('ResultFlow', () => {
       deepEqual(beforeRepeat.mock.calls.map((call) => call.arguments[1]), [1, 2, 3]);
     });
 
-    it('should use the immediate delay strategy by default', async (context: TestContext) => {
-      const setTimeoutMock = context.mock.method(globalThis, 'setTimeout', (callback: () => void) => {
+    it('should use the immediate delay strategy by default', async (testContext: TestContext) => {
+      const setTimeoutMock = testContext.mock.method(globalThis, 'setTimeout', (callback: () => void) => {
         callback();
         return 0 as unknown as ReturnType<typeof setTimeout>;
       });
@@ -3137,8 +3137,8 @@ describe('ResultFlow', () => {
       deepEqual(setTimeoutMock.mock.callCount(), 0);
     });
 
-    it('should wait according to exponentialBackoff delay strategy when provided', async (context: TestContext) => {
-      const setTimeoutMock = context.mock.method(globalThis, 'setTimeout', (callback: () => void) => {
+    it('should wait according to exponentialBackoff delay strategy when provided', async (testContext: TestContext) => {
+      const setTimeoutMock = testContext.mock.method(globalThis, 'setTimeout', (callback: () => void) => {
         callback();
         return 0 as unknown as ReturnType<typeof setTimeout>;
       });
@@ -3343,8 +3343,8 @@ describe('ResultFlow', () => {
   });
 
   describe('timeout', () => {
-    it('should return the original success when the flow completes before the timeout', async (context: TestContext) => {
-      context.mock.method(AbortSignal, 'timeout', () => new AbortController().signal);
+    it('should return the original success when the flow completes before the timeout', async (testContext: TestContext) => {
+      testContext.mock.method(AbortSignal, 'timeout', () => new AbortController().signal);
 
       const result = await ResultFlow.from(N.ok(10))
         .timeout({
@@ -3356,9 +3356,9 @@ describe('ResultFlow', () => {
       deepEqual(result._unsafeUnwrap(), 10);
     });
 
-    it('should return the onTimeout error when the timeout wins', async (context: TestContext) => {
+    it('should return the onTimeout error when the timeout wins', async (testContext: TestContext) => {
       const timeoutController = new AbortController();
-      context.mock.method(AbortSignal, 'timeout', () => timeoutController.signal);
+      testContext.mock.method(AbortSignal, 'timeout', () => timeoutController.signal);
       const onTimeout = mock.fn(() => 'timeout' as const);
       const resultPromise = ResultFlow.of<never, never>(async () => {
         return new Promise<never>(() => undefined);
@@ -3377,7 +3377,7 @@ describe('ResultFlow', () => {
       deepEqual(onTimeout.mock.callCount(), 1);
     });
 
-    it('should pass context and the composed abortSignal to onTimeout', async (testContext) => {
+    it('should pass context and the composed abortSignal to onTimeout', async (testContext: TestContext) => {
       const timeoutController = new AbortController();
       const parentController = new AbortController();
       let composedSignal: AbortSignal | undefined;
@@ -3404,9 +3404,9 @@ describe('ResultFlow', () => {
       deepEqual(onTimeout.mock.calls[0]?.arguments, [{ context, abortSignal: composedSignal }]);
     });
 
-    it('should pass a signal that flow bodies can observe aborting on timeout', async (context: TestContext) => {
+    it('should pass a signal that flow bodies can observe aborting on timeout', async (testContext: TestContext) => {
       const timeoutController = new AbortController();
-      context.mock.method(AbortSignal, 'timeout', () => timeoutController.signal);
+      testContext.mock.method(AbortSignal, 'timeout', () => timeoutController.signal);
       const abortObserved = mock.fn();
       const resultPromise = ResultFlow.of<never, never>(async (_helpers, { abortSignal }) => {
         abortSignal?.addEventListener('abort', abortObserved, { once: true });
@@ -3426,10 +3426,10 @@ describe('ResultFlow', () => {
       deepEqual(abortObserved.mock.callCount(), 1);
     });
 
-    it('should compose an existing upstream abortSignal into the signal passed to the flow', async (context: TestContext) => {
+    it('should compose an existing upstream abortSignal into the signal passed to the flow', async (testContext: TestContext) => {
       const timeoutController = new AbortController();
       const parentController = new AbortController();
-      context.mock.method(AbortSignal, 'timeout', () => timeoutController.signal);
+      testContext.mock.method(AbortSignal, 'timeout', () => timeoutController.signal);
       const onTimeout = mock.fn(() => 'timeout' as const);
       const resultPromise = ResultFlow.of<'aborted', never>(async (_helpers, { abortSignal }) => {
         return new Promise<'aborted'>((resolve) => {
@@ -3450,11 +3450,11 @@ describe('ResultFlow', () => {
       deepEqual(onTimeout.mock.callCount(), 0);
     });
 
-    it('should not call onTimeout when an upstream signal aborts first', async (context: TestContext) => {
+    it('should not call onTimeout when an upstream signal aborts first', async (testContext: TestContext) => {
       const timeoutController = new AbortController();
       const parentController = new AbortController();
       const upstreamAbortError = new Error('upstream aborted');
-      context.mock.method(AbortSignal, 'timeout', () => timeoutController.signal);
+      testContext.mock.method(AbortSignal, 'timeout', () => timeoutController.signal);
       const onTimeout = mock.fn(() => 'timeout' as const);
       const resultFlow = ResultFlow.of<never, never>(async (_helpers, { abortSignal }) => {
         return new Promise<never>((_resolve, reject) => {
@@ -3474,11 +3474,11 @@ describe('ResultFlow', () => {
       deepEqual(onTimeout.mock.callCount(), 0);
     });
 
-    it('should call the onTimeout callback associated with the timeout signal that emitted', async (context: TestContext) => {
+    it('should call the onTimeout callback associated with the timeout signal that emitted', async (testContext: TestContext) => {
       const outerTimeoutController = new AbortController();
       const innerTimeoutController = new AbortController();
       let timeoutCallCount = 0;
-      context.mock.method(AbortSignal, 'timeout', () => {
+      testContext.mock.method(AbortSignal, 'timeout', () => {
         timeoutCallCount += 1;
         return timeoutCallCount === 1
           ? outerTimeoutController.signal
@@ -3508,11 +3508,11 @@ describe('ResultFlow', () => {
       deepEqual(outerOnTimeout.mock.callCount(), 0);
     });
 
-    it('should timeout each retry attempt when timeout is applied before retryPolicy', async (context: TestContext) => {
+    it('should timeout each retry attempt when timeout is applied before retryPolicy', async (testContext: TestContext) => {
       const firstTimeoutController = new AbortController();
       const secondTimeoutController = new AbortController();
       let timeoutCallCount = 0;
-      context.mock.method(AbortSignal, 'timeout', () => {
+      testContext.mock.method(AbortSignal, 'timeout', () => {
         timeoutCallCount += 1;
         return timeoutCallCount === 1
           ? firstTimeoutController.signal
@@ -3537,9 +3537,9 @@ describe('ResultFlow', () => {
       deepEqual(action.mock.callCount(), 2);
     });
 
-    it('should timeout the whole retry sequence when timeout is applied after retryPolicy', async (context: TestContext) => {
+    it('should timeout the whole retry sequence when timeout is applied after retryPolicy', async (testContext: TestContext) => {
       const timeoutController = new AbortController();
-      context.mock.method(AbortSignal, 'timeout', () => timeoutController.signal);
+      testContext.mock.method(AbortSignal, 'timeout', () => timeoutController.signal);
       const action = mock.fn(() => N.err('failure' as const));
       const resultPromise = ResultFlow.from(action)
         .retryPolicy({
@@ -3565,8 +3565,8 @@ describe('ResultFlow', () => {
     const error = 'error';
     const defaultInterval = 10;
 
-    it('should repeat the flow until fails, and call `onInterruption` with the error', async (context: TestContext) => {
-      context.mock.timers.enable({ apis: ['setInterval'] });
+    it('should repeat the flow until fails, and call `onInterruption` with the error', async (testContext: TestContext) => {
+      testContext.mock.timers.enable({ apis: ['setInterval'] });
       const mockAction: Mock<() => Result<undefined, string>> = mock.fn(
         () => N.err(error),
         () => N.ok(undefined),
@@ -3578,10 +3578,10 @@ describe('ResultFlow', () => {
         interval: defaultInterval,
         onInterruption: mockOnInterruption,
       });
-      await advanceToNextTick(context);
-      await advanceToNextTick(context);
-      await advanceToNextTick(context);
-      await advanceToNextTick(context);
+      await advanceToNextTick(testContext);
+      await advanceToNextTick(testContext);
+      await advanceToNextTick(testContext);
+      await advanceToNextTick(testContext);
 
       deepEqual(mockAction.mock.callCount(), 3);
       deepEqual(mockOnInterruption.mock.callCount(), 1);
@@ -3592,8 +3592,8 @@ describe('ResultFlow', () => {
       });
     });
 
-    it('should interrupt the flow when the abortSignal is aborted, and call `onInterruption` with the cause `aborted`', async (context: TestContext) => {
-      context.mock.timers.enable({ apis: ['setInterval'] });
+    it('should interrupt the flow when the abortSignal is aborted, and call `onInterruption` with the cause `aborted`', async (testContext: TestContext) => {
+      testContext.mock.timers.enable({ apis: ['setInterval'] });
       const abortController = new AbortController();
       const mockAction: Mock<() => Result<undefined, string>> = mock.fn(() =>
         N.ok(undefined),
@@ -3607,14 +3607,14 @@ describe('ResultFlow', () => {
       });
       abortController.abort();
 
-      await advanceToNextTick(context);
+      await advanceToNextTick(testContext);
       deepEqual(mockAction.mock.callCount(), 0);
       deepEqual(mockOnInterruption.mock.callCount(), 1);
       deepEqual(mockOnInterruption.mock.calls[0]?.arguments[0], { cause: 'aborted' });
     });
 
-    it('should run a recovery action in case of failure, and stop the flow it the recovery fails. In which case it calls `onInterruption` callback', async (context: TestContext) => {
-      context.mock.timers.enable({ apis: ['setInterval'] });
+    it('should run a recovery action in case of failure, and stop the flow it the recovery fails. In which case it calls `onInterruption` callback', async (testContext: TestContext) => {
+      testContext.mock.timers.enable({ apis: ['setInterval'] });
       const recoveryError = 'recovery-error' as const;
       const mockAction: Mock<() => Result<never, string>> = mock.fn(() => N.err(error));
       const mockRecoveryAction = mock.fn(() => Promise.resolve(N.err(recoveryError)));
@@ -3626,8 +3626,8 @@ describe('ResultFlow', () => {
         onInterruption: mockOnInterruption,
       });
 
-      await advanceToNextTick(context);
-      await advanceToNextTick(context);
+      await advanceToNextTick(testContext);
+      await advanceToNextTick(testContext);
 
       deepEqual(mockAction.mock.callCount(), 1);
       deepEqual(mockRecoveryAction.mock.callCount(), 1);
@@ -3639,8 +3639,8 @@ describe('ResultFlow', () => {
       });
     });
 
-    it('should run a recovery action in case of failure, and stop the flow it the recovery fails. In which case it calls `onInterruption` callback (ResultFlow variant for recoveryAction)', async (context: TestContext) => {
-      context.mock.timers.enable({ apis: ['setInterval'] });
+    it('should run a recovery action in case of failure, and stop the flow it the recovery fails. In which case it calls `onInterruption` callback (ResultFlow variant for recoveryAction)', async (testContext: TestContext) => {
+      testContext.mock.timers.enable({ apis: ['setInterval'] });
       const recoveryError = 'recovery-error' as const;
       const mockAction: Mock<() => Result<never, string>> = mock.fn(() => N.err(error));
       const mockRecoveryAction = mock.fn(() => ResultFlow.from(() => N.err(recoveryError)));
@@ -3651,8 +3651,8 @@ describe('ResultFlow', () => {
         recoveryAction: mockRecoveryAction,
         onInterruption: mockOnInterruption,
       });
-      await advanceToNextTick(context);
-      await advanceToNextTick(context);
+      await advanceToNextTick(testContext);
+      await advanceToNextTick(testContext);
 
       deepEqual(mockAction.mock.callCount(), 1);
       deepEqual(mockRecoveryAction.mock.callCount(), 1);
@@ -3664,8 +3664,8 @@ describe('ResultFlow', () => {
       });
     });
 
-    it('should run a recovery action in case of failure, and stop the flow it the recovery fails. In which case it calls `onInterruption` callback (ResultAsync variant for recoveryAction)', async (context: TestContext) => {
-      context.mock.timers.enable({ apis: ['setInterval'] });
+    it('should run a recovery action in case of failure, and stop the flow it the recovery fails. In which case it calls `onInterruption` callback (ResultAsync variant for recoveryAction)', async (testContext: TestContext) => {
+      testContext.mock.timers.enable({ apis: ['setInterval'] });
       const recoveryError = 'recovery-error' as const;
       const mockAction: Mock<() => Result<never, string>> = mock.fn(() => N.err(error));
       const mockRecoveryAction = mock.fn(() => N.errAsync(recoveryError));
@@ -3676,8 +3676,8 @@ describe('ResultFlow', () => {
         recoveryAction: mockRecoveryAction,
         onInterruption: mockOnInterruption,
       });
-      await advanceToNextTick(context);
-      await advanceToNextTick(context);
+      await advanceToNextTick(testContext);
+      await advanceToNextTick(testContext);
 
       deepEqual(mockAction.mock.callCount(), 1);
       deepEqual(mockRecoveryAction.mock.callCount(), 1);
@@ -3689,8 +3689,8 @@ describe('ResultFlow', () => {
       });
     });
 
-    it('should run a recovery action in case of failure, and stop the flow it the recovery fails. In which case it calls `onInterruption` callback (Result variant for recoveryAction)', async (context: TestContext) => {
-      context.mock.timers.enable({ apis: ['setInterval'] });
+    it('should run a recovery action in case of failure, and stop the flow it the recovery fails. In which case it calls `onInterruption` callback (Result variant for recoveryAction)', async (testContext: TestContext) => {
+      testContext.mock.timers.enable({ apis: ['setInterval'] });
       const recoveryError = 'recovery-error' as const;
       const mockAction: Mock<() => Result<never, string>> = mock.fn(() => N.err(error));
       const mockRecoveryAction = mock.fn(() => N.err(recoveryError));
@@ -3701,8 +3701,8 @@ describe('ResultFlow', () => {
         recoveryAction: mockRecoveryAction,
         onInterruption: mockOnInterruption,
       });
-      await advanceToNextTick(context);
-      await advanceToNextTick(context);
+      await advanceToNextTick(testContext);
+      await advanceToNextTick(testContext);
 
       deepEqual(mockAction.mock.callCount(), 1);
       deepEqual(mockRecoveryAction.mock.callCount(), 1);
@@ -3714,8 +3714,8 @@ describe('ResultFlow', () => {
       });
     });
 
-    it('should run a recovery action in case of failure, and resume the repeat flow it if the recovery succeeds', async (context: TestContext) => {
-      context.mock.timers.enable({ apis: ['setInterval'] });
+    it('should run a recovery action in case of failure, and resume the repeat flow it if the recovery succeeds', async (testContext: TestContext) => {
+      testContext.mock.timers.enable({ apis: ['setInterval'] });
       const abortController = new AbortController();
       const mockAction: Mock<() => Result<undefined, string>> = mock.fn(
         () => N.ok(undefined),
@@ -3731,10 +3731,10 @@ describe('ResultFlow', () => {
         onInterruption: mockOnInterruption,
         abortSignal: abortController.signal,
       });
-      await advanceToNextTick(context);
-      await advanceToNextTick(context);
-      await advanceToNextTick(context);
-      await advanceToNextTick(context);
+      await advanceToNextTick(testContext);
+      await advanceToNextTick(testContext);
+      await advanceToNextTick(testContext);
+      await advanceToNextTick(testContext);
 
       deepEqual(mockAction.mock.callCount() > 1, true);
       deepEqual(mockRecoveryAction.mock.callCount(), 1);
@@ -3743,8 +3743,8 @@ describe('ResultFlow', () => {
       abortController.abort();
     });
 
-    it('should pass context to the periodic flow and recovery action', async (context: TestContext) => {
-      context.mock.timers.enable({ apis: ['setInterval'] });
+    it('should pass context to the periodic flow and recovery action', async (testContext: TestContext) => {
+      testContext.mock.timers.enable({ apis: ['setInterval'] });
       const flowMock = mock.fn();
       const recoveryMock = mock.fn(() => N.err('recovery-error'));
       const onInterruption = mock.fn();
@@ -3760,8 +3760,8 @@ describe('ResultFlow', () => {
         onInterruption,
       });
 
-      await advanceToNextTick(context);
-      await advanceToNextTick(context);
+      await advanceToNextTick(testContext);
+      await advanceToNextTick(testContext);
 
       deepEqual(flowMock.mock.calls[0]?.arguments, [{ context: {
         correlationId: 'test-correlation-id',
@@ -3779,9 +3779,9 @@ describe('ResultFlow', () => {
       deepEqual(onInterruption.mock.callCount(), 1);
     });
 
-    it('should let the interval callback reject when the periodic flow throws', async (context: TestContext) => {
+    it('should let the interval callback reject when the periodic flow throws', async (testContext: TestContext) => {
       let intervalCallback: (() => Promise<void>) | undefined;
-      context.mock.method(globalThis, 'setInterval', (callback: () => void) => {
+      testContext.mock.method(globalThis, 'setInterval', (callback: () => void) => {
         intervalCallback = callback as () => Promise<void>;
         return 0 as unknown as ReturnType<typeof setTimeout>;
       });
@@ -3804,9 +3804,9 @@ describe('ResultFlow', () => {
       deepEqual(mockOnInterruption.mock.callCount(), 0);
     });
 
-    it('should let the interval callback reject when the recovery action rejects', async (context: TestContext) => {
+    it('should let the interval callback reject when the recovery action rejects', async (testContext: TestContext) => {
       let intervalCallback: (() => Promise<void>) | undefined;
-      context.mock.method(globalThis, 'setInterval', (callback: () => void) => {
+      testContext.mock.method(globalThis, 'setInterval', (callback: () => void) => {
         intervalCallback = callback as () => Promise<void>;
         return 0 as unknown as ReturnType<typeof setTimeout>;
       });
