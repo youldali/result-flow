@@ -602,12 +602,12 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     const intervalId = setInterval(async () => {
       const result = await this.run(extras);
       if (result.isErr()) {
-        let recoveryResult;
+        let recoveryResult: Result<unknown, E2> | undefined;
         if (recoveryAction) {
           const recoveryResultPromise = recoveryAction(result.error, extras);
-          recoveryResult = await (ResultFlow.isResultFlow(recoveryResultPromise)
+          recoveryResult = await (ResultFlow.isResultFlow<unknown, E2>(recoveryResultPromise)
             ? recoveryResultPromise.run(extras)
-            : recoveryResultPromise);
+            : recoveryResultPromise as Result<unknown, E2> | Promise<Result<unknown, E2>> | ResultAsync<unknown, E2>);
         }
         if (!recoveryResult || recoveryResult.isErr()) {
           clearInterval(intervalId);
