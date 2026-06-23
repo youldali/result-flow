@@ -26,13 +26,19 @@ const unwrap = <A, E>(result: Result<A, E>): A => {
 
 type DefaultContext = Record<never, never>;
 type BaseContext = Record<string, any>;
-type SubContext<C> = { [K in keyof C]?: C[K] };
 type PolymorphicResult<A, E, C extends BaseContext = DefaultContext> = ResultFlow<A, E, C> | Promise<Result<A, E>> | Result<A, E> | ResultAsync<A, E>;
 // RunParams is the public caller input. Extras is the normalized runtime shape
 // passed to flow callbacks, so context is always present there.
 type Extras<C extends BaseContext> = { context: C; abortSignal?: AbortSignal; };
 type RunParams<C extends BaseContext> =
   { abortSignal?: AbortSignal } & (keyof C extends never ? { context?: C } : { context: C });
+type YieldableResultFlow<A, E, C extends BaseContext> = {
+  run(
+    ...args: keyof C extends never
+      ? [] | [RunParams<C>]
+      : [RunParams<C>]
+  ): Promise<Result<A, E>>;
+};
 type FlowSuccess<F> = F extends ResultFlow<infer A, any, any> ? A : never;
 type FlowError<F> = F extends ResultFlow<any, infer E, any> ? E : never;
 type FlowContext<F> = F extends ResultFlow<any, any, infer C> ? C : never;
@@ -579,7 +585,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     }
   }
 
-  static gen<A, E, C extends BaseContext = DefaultContext>(f: ((extras: Extras<C>) => AsyncGenerator<ResultFlow<unknown, E, SubContext<C>> | ResultFlow<unknown, E, C> | Result<unknown, E> | ResultAsync<unknown, E>, A, unknown> )): ResultFlow<A, E, C> {
+  static gen<A, E, C extends BaseContext = DefaultContext>(f: ((extras: Extras<C>) => AsyncGenerator<YieldableResultFlow<unknown, E, C> | Result<unknown, E> | ResultAsync<unknown, E>, A, unknown> )): ResultFlow<A, E, C> {
     return ResultFlow.of<A, E, C>(async ({ tryTo }, extras) => {
       const generator = f(extras);
       let result = await generator.next();
@@ -591,7 +597,7 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     });
   }
 
-  *[Symbol.iterator](): Generator<ResultFlow<any, E, C>, A, any> {
+  *[Symbol.iterator](): Generator<YieldableResultFlow<any, E, C>, A, any> {
 		return yield this as any;
 	}
 }

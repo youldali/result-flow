@@ -169,6 +169,35 @@ describe('ResultFlow', () => {
 
       deepEqual(mockFn.mock.calls[0]?.arguments, [context]);
     });
+
+    it('should allow yielding flows that require subsets of the generator context', async () => {
+      type CorrelationContext = { correlationId: string };
+      type UserContext = { userId: string };
+      type FlowContext = CorrelationContext & UserContext;
+
+      const correlationFlow = ResultFlow.of<number, never, CorrelationContext>(
+        async (_helpers, { context }) => context.correlationId.length,
+      );
+      const userFlow = ResultFlow.of<string, never, UserContext>(
+        async (_helpers, { context }) => context.userId,
+      );
+
+      const resultFlow = ResultFlow.gen<string, never, FlowContext>(async function* () {
+        const correlationLength = yield* correlationFlow;
+        const userId = yield* userFlow;
+
+        return `${userId}:${correlationLength}`;
+      });
+
+      const result = await resultFlow.run({
+        context: {
+          correlationId: 'test-correlation-id',
+          userId: 'test-user-id',
+        },
+      });
+
+      deepEqual(result, N.ok('test-user-id:19'));
+    });
   });
 
   describe('run', () => {
