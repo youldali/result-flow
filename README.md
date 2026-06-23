@@ -847,6 +847,17 @@ tryTo<A, E2>(
   options: { mapError: (error: E2) => E },
 ): Promise<A>
 
+tryToOrRecover<A, A2>(
+  result: N.Result<A, E> | Promise<N.Result<A, E>> | N.ResultAsync<A, E>,
+  fallback: (error: E) => A2 | Promise<A2>,
+): Promise<A | A2>
+
+tryToOrRecover<A, E2, A2>(
+  result: N.Result<A, E2> | Promise<N.Result<A, E2>> | N.ResultAsync<A, E2>,
+  fallback: (error: E) => A2 | Promise<A2>,
+  options: { mapError: (error: E2) => E },
+): Promise<A | A2>
+
 fail(error: E): never
 
 promiseHelpers: {
@@ -866,6 +877,19 @@ const flow = ResultFlow.of<User, FlowError>(async ({ tryTo }) => {
   return tryTo(findUser('missing'), {
     mapError: (error) => ({ kind: 'flow-error', cause: error }),
   });
+});
+```
+
+Example with `tryToOrRecover`:
+
+```ts
+const flow = ResultFlow.of<User, UserError>(async ({ tryTo, tryToOrRecover }) => {
+  const user = await tryToOrRecover(findUser('missing'), () => ({
+    id: 'guest',
+    email: 'guest@example.com',
+  }));
+
+  return tryTo(saveUser(user));
 });
 ```
 

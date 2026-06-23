@@ -12,6 +12,17 @@ export interface ResultFlowHelpers<E> {
       mapError: (value: E2) => E;
     },
   ): Promise<A>;
+  tryToOrRecover<A, A2>(
+    result: Result<A, E> | Promise<Result<A, E>> | ResultAsync<A, E>,
+    fallback: (error: E) => A2 | Promise<A2>,
+  ): Promise<A | A2>;
+  tryToOrRecover<A, E2, A2>(
+    result: Result<A, E2> | Promise<Result<A, E2>> | ResultAsync<A, E2>,
+    fallback: (error: E) => A2 | Promise<A2>,
+    options: {
+      mapError: (value: E2) => E;
+    },
+  ): Promise<A | A2>;
   fail(error: E): never;
   promiseHelpers: PromiseHelpers.PromiseHelpers;
 }
@@ -83,6 +94,23 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
       return options?.mapError
         ? PromiseHelpers.mapError(Promise.resolve(result), options.mapError).then(unwrap)
         : Promise.resolve(result).then(unwrap);
+    },
+    async tryToOrRecover<A1, E2, A2>(
+      result: Result<A1, E2> | Promise<Result<A1, E2>> | ResultAsync<A1, E2>,
+      fallback: (error: E) => A2 | Promise<A2>,
+      options?: {
+        mapError?: (value: E2) => E;
+      },
+    ): Promise<A1 | A2> {
+      const resolvedResult = options?.mapError
+        ? await PromiseHelpers.mapError(Promise.resolve(result), options.mapError)
+        : await Promise.resolve(result);
+
+      if (resolvedResult.isOk()) {
+        return resolvedResult.value;
+      }
+
+      return fallback(resolvedResult.error as E);
     },
     fail(error: E): never {
       // eslint-disable-next-line @spendesk/must-use-result
