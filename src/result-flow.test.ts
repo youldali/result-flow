@@ -2480,6 +2480,218 @@ describe('ResultFlow', () => {
     });
   });
 
+  describe('catch', () => {
+    it('should bypass the handler for upstream successes and explicit failures', async () => {
+      const value = { count: 10 };
+      const failure = N.err({ reason: 'failure' });
+      const handler = mock.fn(() => N.ok('fallback'));
+      const success = await ResultFlow.from(N.ok(value)).catch(handler).run();
+      strictEqual(success._unsafeUnwrap(), value);
+      strictEqual(await ResultFlow.from(failure).catch(handler).run(), failure);
+      deepEqual(handler.mock.callCount(), 0);
+    });
+
+    for (const cause of [new Error('unexpected'), 'thrown string', 42, null, undefined, { reason: 'unexpected' }]) {
+      for (const asynchronous of [false, true]) {
+        it(`should handle ${String(cause)} from a ${asynchronous ? 'rejection' : 'synchronous throw'}`, async () => {
+          const handler = mock.fn((received: unknown) => {
+            strictEqual(received, cause);
+            return N.ok('recovered');
+          });
+          const flow = ResultFlow.of<number, never>(() => {
+            if (asynchronous) return Promise.reject(cause);
+            throw cause;
+          });
+
+          deepEqual(await flow.catch(handler).run(), N.ok('recovered'));
+          deepEqual(handler.mock.callCount(), 1);
+        });
+      }
+    }
+
+    it('should convert exceptions to Err without invoking downstream exception handlers', async () => {
+      const failure = N.err('converted' as const);
+      const downstream = mock.fn(() => N.ok(0));
+      const result = await ResultFlow.from<number, never>(() => { throw 'unexpected'; })
+        .catch(() => failure)
+        .catch(downstream)
+        .run();
+
+      strictEqual(result, failure);
+      deepEqual(downstream.mock.callCount(), 0);
+    });
+
+    it('should lazily execute a returned ResultFlow with the current context and abort signal on each run', async () => {
+      const abortSignal = new AbortController().signal;
+      const fallback = mock.fn(async (_helpers, extras: ResultFlowExtras<Context>) => {
+        strictEqual(extras.context, context);
+        strictEqual(extras.abortSignal, abortSignal);
+        return 'recovered' as const;
+      });
+      const handler = mock.fn(() => ResultFlow.of<'recovered', 'fallback-error', Context>(fallback));
+      const flow = ResultFlow.of<number, 'original', Context>(async () => { throw 'unexpected'; })
+        .catch(handler);
+      const typedFlow: ResultFlow<number | 'recovered', 'original' | 'fallback-error', Context> = flow;
+
+      deepEqual(handler.mock.callCount(), 0);
+      deepEqual(fallback.mock.callCount(), 0);
+      for (let i = 0; i < 2; i++) {
+        deepEqual(await typedFlow.run({ context, abortSignal }), N.ok('recovered'));
+      }
+      deepEqual(handler.mock.callCount(), 2);
+      deepEqual(fallback.mock.callCount(), 2);
+    });
+
+    it('should preserve failures from a returned ResultFlow without catching them again', async () => {
+      const failure = N.err('fallback-error' as const);
+      const handler = mock.fn(() => ResultFlow.from(failure));
+      const downstream = mock.fn(() => N.ok(0));
+      const flow = ResultFlow.from<number, never>(() => { throw 'unexpected'; })
+        .catch(handler).catch(downstream);
+
+      strictEqual(await flow.run(), failure);
+      deepEqual(handler.mock.callCount(), 1);
+      deepEqual(downstream.mock.callCount(), 0);
+    });
+
+    for (const asynchronous of [false, true]) {
+      it(`should let a returned ResultFlow's ${asynchronous ? 'rejection' : 'throw'} escape to a downstream catch`, async () => {
+        const cause = { reason: 'fallback failed' };
+        const handler = mock.fn(() => ResultFlow.of<number, never>(() => {
+          if (asynchronous) return Promise.reject(cause);
+          throw cause;
+        }));
+        const flow = ResultFlow.from<number, never>(() => { throw 'unexpected'; }).catch(handler);
+
+        await rejects(() => flow.run(), (received: unknown) => received === cause);
+        deepEqual(handler.mock.callCount(), 1);
+        deepEqual(await flow.catch(received => {
+          strictEqual(received, cause);
+          return N.ok('recovered');
+        }).run(), N.ok('recovered'));
+        deepEqual(handler.mock.callCount(), 2);
+      });
+    }
+
+    it('should await asynchronous handlers and support ResultAsync', async () => {
+      const flow = ResultFlow.from<number, never>(() => { throw 'unexpected'; });
+      const deferred = createDeferred<Result<string, 'converted'>>();
+      const result = flow.catch(() => deferred.promise).run();
+      deferred.resolve(N.ok('recovered'));
+      deepEqual(await result, N.ok('recovered'));
+      deepEqual(await flow.catch(async () => N.err('converted')).run(), N.err('converted'));
+      deepEqual(await flow.catch(() => N.okAsync('recovered')).run(), N.ok('recovered'));
+      deepEqual(await flow.catch(() => N.errAsync('converted')).run(), N.err('converted'));
+    });
+
+    for (const asynchronous of [false, true]) {
+      it(`should propagate handler ${asynchronous ? 'rejections' : 'throws'} unchanged and allow downstream catch`, async () => {
+        const cause = { reason: 'handler failed' };
+        const handler = mock.fn(() => {
+          if (asynchronous) return Promise.reject<never>(cause);
+          throw cause;
+        });
+        const flow = ResultFlow.from<number, never>(() => { throw 'upstream'; }).catch(handler);
+
+        await rejects(() => flow.run(), (received: unknown) => received === cause);
+        deepEqual(handler.mock.callCount(), 1);
+        deepEqual(await flow.catch((received) => {
+          strictEqual(received, cause);
+          return N.ok('recovered');
+        }).run(), N.ok('recovered'));
+        deepEqual(handler.mock.callCount(), 2);
+      });
+    }
+
+    it('should catch upstream operators but leave later exceptions outside the boundary', async () => {
+      const cause = new Error('map failed');
+      const base = ResultFlow.from(N.ok(10));
+      const transform = () => { throw cause; };
+      deepEqual(await base.map(transform).catch(() => N.ok(20)).map(value => value + 1).run(), N.ok(21));
+      const handler = mock.fn(() => N.ok(20));
+      const flow = base.catch(handler).map(transform);
+      await rejects(() => flow.run(), (received: unknown) => received === cause);
+      deepEqual(handler.mock.callCount(), 0);
+      deepEqual(await flow.catch(() => N.err('converted')).run(), N.err('converted'));
+    });
+
+    it('should keep fail, tryTo, and generator interruptions internal', async () => {
+      const handler = mock.fn(() => N.ok(20));
+      const flows = [
+        ResultFlow.of<number, string>(async ({ fail }) => fail('failure')),
+        ResultFlow.of<number, string>(async ({ tryTo }) => tryTo(N.err('failure'))),
+        ResultFlow.gen<number, string>(async function* () { return yield* N.err<number, string>('failure'); }),
+      ];
+      for (const flow of flows) {
+        deepEqual(await flow.catch(handler).run(), N.err('failure'));
+      }
+      deepEqual(handler.mock.callCount(), 0);
+    });
+
+    it('should preserve execution extras through the upstream flow, handler, and downstream operators', async () => {
+      const abortSignal = new AbortController().signal;
+      let upstreamExtras: ResultFlowExtras<Context> | undefined;
+      const flow = ResultFlow.of<number, never, Context>(async (_helpers, extras) => {
+        upstreamExtras = extras;
+        throw 'unexpected';
+      }).catch((_cause, extras) => {
+        strictEqual(extras, upstreamExtras);
+        strictEqual(extras.context, context);
+        strictEqual(extras.abortSignal, abortSignal);
+        return N.ok(20);
+      }).map((value, extras) => {
+        strictEqual(extras.context, context);
+        strictEqual(extras.abortSignal, abortSignal);
+        return value;
+      });
+      deepEqual(await flow.run({ context, abortSignal }), N.ok(20));
+      deepEqual(await flow.runAndMatch({
+        ok: (value, extras) => { strictEqual(extras.abortSignal, abortSignal); return value; },
+        err: () => 0,
+      }, { context, abortSignal }), 20);
+    });
+
+    it('should remain lazy and immutable with independent repeated executions', async () => {
+      let executions = 0;
+      const base = ResultFlow.of<number, never>(() => { throw ++executions; });
+      const handler = mock.fn((cause: unknown) => N.ok(cause));
+      const flow = base.catch(handler);
+      deepEqual(executions, 0);
+      deepEqual(handler.mock.callCount(), 0);
+      deepEqual(await Promise.all([flow.run(), flow.run()]), [N.ok(1), N.ok(2)]);
+      deepEqual(await flow.run(), N.ok(3));
+      await rejects(() => base.run(), (cause: unknown) => cause === 4);
+      deepEqual(handler.mock.callCount(), 3);
+    });
+
+    it('should infer success and error unions and preserve types for Err-only and rethrow-only handlers', async () => {
+      type Equal<X, Y> = (<T>() => T extends X ? 1 : 2) extends (<T>() => T extends Y ? 1 : 2) ? true : false;
+      const assertType = <T extends true>(_value: T) => {};
+      const base = ResultFlow.from<number, 'original', Context>(N.ok(10));
+      const union = base.catch((cause, extras) => {
+        assertType<Equal<typeof cause, unknown>>(true);
+        assertType<Equal<typeof extras, ResultFlowExtras<Context>>>(true);
+        return cause ? N.ok('fallback' as const) : N.err('converted' as const);
+      });
+      const errOnly = base.catch(() => N.err('converted' as const));
+      const rethrowOnly = base.catch(cause => { throw cause; });
+      const asyncRethrow = base.catch(async cause => { throw cause; });
+      const asyncHandler = base.catch(async () => N.ok('fallback' as const));
+      const resultAsync = base.catch(() => N.errAsync('converted' as const));
+      const resultFlow = base.catch(() => ResultFlow.from<'fallback', 'converted', Context>(N.ok('fallback')));
+      const errFlow = base.catch(() => ResultFlow.from(N.err('converted' as const)));
+      assertType<Equal<typeof union, ResultFlow<number | 'fallback', 'original' | 'converted', Context>>>(true);
+      assertType<Equal<typeof errOnly, ResultFlow<number, 'original' | 'converted', Context>>>(true);
+      assertType<Equal<typeof rethrowOnly, typeof base>>(true);
+      assertType<Equal<typeof asyncRethrow, typeof base>>(true);
+      assertType<Equal<typeof asyncHandler, ResultFlow<number | 'fallback', 'original', Context>>>(true);
+      assertType<Equal<typeof resultAsync, ResultFlow<number, 'original' | 'converted', Context>>>(true);
+      assertType<Equal<typeof resultFlow, ResultFlow<number | 'fallback', 'original' | 'converted', Context>>>(true);
+      assertType<Equal<typeof errFlow, ResultFlow<number, 'original' | 'converted', Context>>>(true);
+      deepEqual(await union.run({ context }), N.ok(10));
+    });
+  });
+
   describe('orElse', () => {
     it('should execute the alternative if the first is a failure', async () => {
       const mockCallback = mock.fn();

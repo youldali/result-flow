@@ -57,6 +57,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
     - [`mapError`](#maperror)
   - Compose And Recover
     - [`chain`](#chain)
+    - [`catch`](#catch)
     - [`orElse`](#orelse)
     - [`recover`](#recover)
   - Observe
@@ -179,6 +180,7 @@ import * as N from 'neverthrow';
 | Compose fallible work | `chain`, `orElse` | You want to continue with another operation that can itself fail. |
 | Observe results | `tap`, `tapError`, `finally`, `tapBoth` | You want side effects such as logging, metrics, or cleanup while preserving the original result. |
 | Validate success values | `ensure` | You want to keep a success value only if it passes a predicate. |
+| Handle exceptions | `catch` | You want to opt in to converting upstream exceptions into Results or recovering with `Ok`. |
 | Recover from failures | `recover` | You want to turn a failure into an infallible fallback success value. |
 | Control execution | `retryPolicy`, `repeatUntil`, `timeout`, `runPeriodically` | You want retries, readiness polling, time limits, or background interval execution. |
 | Coordinate flows | `all`, `allSettled`, `race`, `firstOk` | You want to combine multiple lazy flows. |
@@ -245,6 +247,8 @@ runPeriodically -> run ongoing background work
 ```
 
 ### Fallbacks
+
+`orElse` and `recover` handle explicit `Err` failures. Use [`catch`](#catch) for thrown exceptions and rejected promises; it leaves existing `Ok` and `Err` outcomes unchanged.
 
 | Method | Fallback Returns | Use When |
 | --- | --- | --- |
@@ -328,7 +332,7 @@ const result = await ResultFlow.from<number, 'missing'>(N.err('missing')).run();
 // Err('missing')
 ```
 
-Thrown exceptions and rejected promises are not converted into `Err`. They reject the `run()` promise.
+By default, thrown exceptions and rejected promises are not converted into `Err`. They reject the `run()` promise. Add `.catch(handler)` to opt in to handling exceptions from the preceding flow.
 
 ```ts
 const flow = ResultFlow.of<number, never>(async () => {
@@ -1458,6 +1462,54 @@ const result = await ResultFlow
   .from(N.ok('user-1'))
   .chain((id) => ResultFlow.from(findUser(id)))
   .run();
+```
+
+### `catch`
+
+Handles unexpected synchronous exceptions and asynchronous rejections from the preceding flow. Existing `Ok` and `Err` outcomes pass through unchanged without invoking the handler, including failures produced by `fail()`, `tryTo()`, or generator short-circuiting.
+
+```ts
+catch<A2 = never, E2 = never>(
+  handler: (cause: unknown, extras: ResultFlowExtras<C>) =>
+    | ResultFlow<A2, E2, C>
+    | N.Result<A2, E2>
+    | Promise<N.Result<A2, E2>>
+    | N.ResultAsync<A2, E2>,
+): ResultFlow<A | A2, E | E2, C>
+```
+
+The handler receives the original thrown value as `unknown` and the current context and abort signal. Returning `Ok` recovers with a successful value; returning `Err` converts the exception into a typed failure. Asynchronous handlers are awaited. A handler can also return a `ResultFlow`, which executes with the current context and abort signal. Its explicit failures stay Result failures, and its exceptions propagate to any downstream `.catch()`. Calling `.catch()` is lazy and returns a new flow; each execution runs independently.
+
+```ts
+const formatted = flow
+  .map(transform)
+  .catch(cause => N.err(toDomainError(cause)))
+  .map(format);
+```
+
+Ordering defines the exception boundary: exceptions from `flow` or `transform` are handled here. Exceptions from `format` still propagate unless another `.catch()` is chained after it. A handler's own throws or rejections also propagate unchanged; the same operator never catches them again, but a downstream `.catch()` can.
+
+```ts
+const withFallback = flow.catch(cause => {
+  if (cause instanceof NotFoundError) {
+    return N.ok(defaultValue);
+  }
+
+  throw cause;
+});
+```
+
+Unlike `.orElse()` and `.recover()`, `.catch()` handles exceptions rather than explicit Result failures. It preserves the original error type and adds any handler error type. An Err-only handler preserves the success type, and a rethrow-only handler preserves both types. Without `.catch()`, exceptions continue to reject execution as before.
+
+A fallback flow can perform additional lazy work:
+
+```ts
+const withFallbackFlow = flow.catch(cause =>
+  ResultFlow.of<string, never>(async () => {
+    console.error(cause);
+    return 'fallback';
+  }),
+);
 ```
 
 ### `orElse`

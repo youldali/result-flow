@@ -482,6 +482,24 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     return this.finally(effect);
   }
 
+  catch<A2 = never, E2 = never>(
+    handler: (cause: unknown, extras: ResultFlowExtras<C>) => PolymorphicResult<A2, E2, C>,
+  ): ResultFlow<A | A2, E | E2, C> {
+    return ResultFlow.of<A | A2, E | E2, C>(async ({ tryTo }, extras) => {
+      let result: Result<A | A2, E | E2>;
+      try {
+        result = await this.executeWithExtras(extras);
+      } catch (cause: unknown) {
+        const handlerResult = handler(cause, extras);
+        result = await (ResultFlow.isResultFlow<A2, E2, C>(handlerResult)
+          ? handlerResult.run(extras)
+          : handlerResult);
+      }
+
+      return tryTo(result);
+    });
+  }
+
   orElse<E2, C2 extends BaseContext = DefaultContext>(
     alternative: (error: E, extras: ResultFlowExtras<C & C2>) => PolymorphicResult<A, E2, C2>,
   ): ResultFlow<A, E2, C & C2> {
