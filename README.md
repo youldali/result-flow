@@ -190,7 +190,7 @@ Aliases:
 - `lift` is an alias for `from`.
 - `tap` is the success-side observer. `ifSuccess` is kept as the more explicit name.
 - `tapError` is the failure-side observer. `ifFailure` is kept as the more explicit name.
-- `tapBoth` is an alias for `finally`.
+- `tapBoth` observes returned Results; `finally` runs cleanup for every outcome, including exceptions.
 
 ## Choosing Related Methods
 
@@ -269,7 +269,8 @@ runPeriodically -> run ongoing background work
 | --- | --- | --- |
 | `tap` / `ifSuccess` | `Ok(value)` | No. |
 | `tapError` / `ifFailure` | `Err(error)` | No. |
-| `finally` / `tapBoth` | Both `Ok` and `Err` | No. |
+| `tapBoth` | Both `Ok` and `Err` | No, unless the effect throws or rejects. |
+| `finally` | `Ok`, `Err`, or an exception | No, unless cleanup throws or rejects. |
 
 ### Combining Flows
 
@@ -570,12 +571,12 @@ const result = await ResultFlow
 
 ### Run Side Effects After Any Result
 
-Use `finally` or its alias `tapBoth` when you want to observe the completed `Result` without changing it.
+Use `tapBoth` when you want to observe the completed `Result` without changing it.
 
 ```ts
 const result = await ResultFlow
   .from(() => saveOrder(order))
-  .finally((result, { context }) => {
+  .tapBoth((result, { context }) => {
     audit.log({
       requestId: context.requestId,
       status: result.isOk() ? 'saved' : 'failed',
@@ -1672,32 +1673,51 @@ const result = await ResultFlow
 
 ### `finally`
 
-Runs a side effect after the flow returns either `Ok` or `Err`, then keeps the original result unchanged.
+Runs and awaits cleanup exactly once per execution after the upstream flow completes. **Cleanup runs even when the upstream flow throws an exception or a promise rejects**, as well as when it returns `Ok` or `Err`. No `.catch()` is needed for cleanup to run.
+
+The operator is lazy; cleanup receives the current context and abort signal.
 
 ```ts
 flow.finally(
-  effect: (result: N.Result<A, E>, extras: { context: C; abortSignal?: AbortSignal }) => void | Promise<void>,
+  effect: (extras: ResultFlowExtras<C>) => void | Promise<void>,
 ): ResultFlow<A, E, C>
 ```
 
-Example:
-
 ```ts
 const result = await ResultFlow
-  .from<number, 'not-found'>(N.err('not-found'))
-  .finally((result) => {
-    console.log(result.isOk() ? 'ok' : `failed: ${result.error}`);
+  .from(() => saveOrder(order))
+  .finally(async ({ context }) => {
+    await releaseResources(context.requestId);
   })
-  .run();
-
-// Err('not-found')
+  .run({ context: { requestId: 'req-123' } });
 ```
 
-If the effect throws or rejects, the exception is not handled by `ResultFlow`; `run()` rejects with that exception. If the wrapped flow throws or rejects before returning a `Result`, the effect is not called.
+For example, cleanup still runs when no Result is returned because the upstream throws:
+
+```ts
+await ResultFlow
+  .of(async () => {
+    throw new Error('Something went wrong');
+  })
+  .finally(() => {
+    console.log('Cleanup runs even after an exception');
+  })
+  .run();
+// Logs the cleanup message, then rejects with the original Error.
+```
+
+This follows JavaScript `try/finally` semantics: if cleanup succeeds, the original success value, typed failure, or thrown value is preserved. If cleanup throws or rejects, its exception replaces the upstream outcome, including an earlier exception or typed failure, and execution rejects unless a downstream `.catch()` handles it. Failures raised by upstream `fail()` and `tryTo()` remain typed `Err` results when cleanup succeeds.
+
+Use `.tapBoth((result, extras) => …)` for effects that need to inspect the returned Result.
+
+Ordering with `.catch()` matters:
+
+- `flow.finally(cleanup).catch(handler)` runs cleanup before the handler. The handler can catch a cleanup exception.
+- `flow.catch(handler).finally(cleanup)` runs cleanup after the handler, even if the handler throws or rejects.
 
 ### `tapBoth`
 
-Alias for `finally`.
+Lazily observes a returned `Ok` or `Err` with `(result, extras)`, awaits the effect, and preserves the original result.
 
 ```ts
 flow.tapBoth(

@@ -462,6 +462,18 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
   }
 
   finally(
+    effect: (extras: ResultFlowExtras<C>) => void | Promise<void>,
+  ): ResultFlow<A, E, C> {
+    return ResultFlow.of<A, E, C>(async ({ tryTo }, extras) => {
+      try {
+        return await tryTo(this.run(extras));
+      } finally {
+        await effect(extras);
+      }
+    });
+  }
+
+  tapBoth(
     effect: (result: Result<A, E>, extras: ResultFlowExtras<C>) => void | Promise<void>,
   ): ResultFlow<A, E, C> {
     return ResultFlow.of<A, E, C>(async ({ fail }, extras) => {
@@ -474,12 +486,6 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
 
       return (result as N.Ok<A, E>).value;
     });
-  }
-
-  tapBoth(
-    effect: (result: Result<A, E>, extras: ResultFlowExtras<C>) => void | Promise<void>,
-  ): ResultFlow<A, E, C> {
-    return this.finally(effect);
   }
 
   catch<A2 = never, E2 = never>(

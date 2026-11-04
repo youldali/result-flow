@@ -2367,11 +2367,130 @@ describe('ResultFlow', () => {
   });
 
   describe('finally', () => {
+    const value = { id: 1 };
+    const error = { reason: 'failure' };
+    const cause = { reason: 'exception' };
+    const outcomes = [
+      { name: 'Ok', flow: ResultFlow.from(N.ok(value)), expected: N.ok(value) },
+      { name: 'Err from fail', flow: ResultFlow.of<never, typeof error>(async ({ fail }) => fail(error)), expected: N.err(error) },
+      { name: 'Err from tryTo', flow: ResultFlow.of<never, typeof error>(async ({ tryTo }) => tryTo(N.err(error))), expected: N.err(error) },
+      { name: 'synchronous throw', flow: ResultFlow.from<never, never>(() => { throw cause; }) },
+      { name: 'rejection', flow: ResultFlow.from<never, never>(() => Promise.reject(cause)) },
+      { name: 'primitive throw', flow: ResultFlow.from<never, never>(() => { throw 'original'; }), cause: 'original' },
+    ];
+
+    for (const outcome of outcomes) {
+      it(`should await cleanup exactly once and preserve ${outcome.name}`, async () => {
+        const started = createDeferred<void>();
+        const release = createDeferred<void>();
+        const effect = mock.fn(async () => {
+          started.resolve();
+          await release.promise;
+        });
+        const flow = outcome.flow.finally(effect);
+        strictEqual(effect.mock.callCount(), 0);
+        let settled = false;
+        const execution = flow.run();
+        const checked = outcome.expected
+          ? execution.then(result => {
+            deepEqual(result, outcome.expected);
+            if (result.isOk()) strictEqual(result.value, value);
+            else strictEqual(result.error, error);
+          })
+          : rejects(execution, received => received === (outcome.cause ?? cause));
+        execution.then(() => { settled = true; }, () => { settled = true; });
+        await started.promise;
+        strictEqual(settled, false);
+        strictEqual(effect.mock.callCount(), 1);
+        deepEqual(effect.mock.calls[0]?.arguments, [{ context: {} }]);
+        release.resolve();
+        await checked;
+        strictEqual(settled, true);
+        strictEqual(effect.mock.callCount(), 1);
+      });
+
+      for (const asynchronous of [false, true]) {
+        it(`should replace ${outcome.name} when cleanup ${asynchronous ? 'rejects' : 'throws'}`, async () => {
+          const cleanupCause = { reason: 'cleanup' };
+          const effect = mock.fn(() => {
+            if (asynchronous) return Promise.reject(cleanupCause);
+            throw cleanupCause;
+          });
+          await rejects(outcome.flow.finally(effect).run(), received => received === cleanupCause);
+          strictEqual(effect.mock.callCount(), 1);
+        });
+      }
+    }
+
+    it('should remain lazy and use the current context and signal on each execution', async () => {
+      const upstream = mock.fn(async (_helpers: unknown, extras: ResultFlowExtras<Context>) => extras.context.userId);
+      const cleanup = mock.fn((_extras: ResultFlowExtras<Context>) => {});
+      const base = ResultFlow.of<string, string, Context>(upstream);
+      const flow: ResultFlow<string, string, Context> = base.finally(cleanup);
+      strictEqual(upstream.mock.callCount(), 0);
+      strictEqual(cleanup.mock.callCount(), 0);
+      for (const userId of ['first', 'second']) {
+        const extras = { context: { ...context, userId }, abortSignal: new AbortController().signal };
+        deepEqual(await flow.run(extras), N.ok(userId));
+        strictEqual(upstream.mock.calls.at(-1)?.arguments[1].context, extras.context);
+        strictEqual(upstream.mock.calls.at(-1)?.arguments[1].abortSignal, extras.abortSignal);
+        deepEqual(cleanup.mock.calls.at(-1)?.arguments, [extras]);
+        strictEqual(cleanup.mock.calls.at(-1)?.arguments[0].context, extras.context);
+      }
+      strictEqual(upstream.mock.callCount(), 2);
+      strictEqual(cleanup.mock.callCount(), 2);
+      await base.run({ context });
+      strictEqual(cleanup.mock.callCount(), 2);
+    });
+
+    it('should run cleanup before catch and let catch handle cleanup exceptions', async () => {
+      for (const cleanupFails of [false, true]) {
+        const events: string[] = [];
+        const cleanupCause = new Error('cleanup');
+        const result = await ResultFlow.from<never, never>(() => { throw cause; })
+          .finally(async () => {
+            events.push('cleanup');
+            if (cleanupFails) throw cleanupCause;
+          })
+          .catch(received => {
+            events.push('handler');
+            strictEqual(received, cleanupFails ? cleanupCause : cause);
+            return N.ok('recovered');
+          }).run();
+        deepEqual(result, N.ok('recovered'));
+        deepEqual(events, ['cleanup', 'handler']);
+      }
+    });
+
+    it('should run cleanup after catch, including when the handler throws or rejects', async () => {
+      for (const handlerOutcome of ['Ok', 'Err', 'throw', 'reject']) {
+        const events: string[] = [];
+        const handlerCause = new Error('handler');
+        const execution = ResultFlow.from<never, never>(() => { throw cause; })
+          .catch(() => {
+            events.push('handler');
+            if (handlerOutcome === 'throw') throw handlerCause;
+            if (handlerOutcome === 'reject') return Promise.reject(handlerCause);
+            return handlerOutcome === 'Ok' ? N.ok('recovered') : N.err('converted');
+          })
+          .finally(() => { events.push('cleanup'); })
+          .run();
+        if (handlerOutcome === 'throw' || handlerOutcome === 'reject') {
+          await rejects(execution, received => received === handlerCause);
+        } else {
+          deepEqual(await execution, handlerOutcome === 'Ok' ? N.ok('recovered') : N.err('converted'));
+        }
+        deepEqual(events, ['handler', 'cleanup']);
+      }
+    });
+  });
+
+  describe('tapBoth', () => {
     it('should call the effect with the Ok result when the flow succeeds', async () => {
       const resultFlow = ResultFlow.from<number, never>(N.ok(10));
       const effect = mock.fn();
 
-      await resultFlow.finally(effect).run();
+      await resultFlow.tapBoth(effect).run();
 
       deepEqual(effect.mock.calls[0]?.arguments, [N.ok(10), { context: {} }]);
     });
@@ -2380,7 +2499,7 @@ describe('ResultFlow', () => {
       const value = { id: 1, name: 'test' };
       const resultFlow = ResultFlow.from<typeof value, never>(N.ok(value));
 
-      const result = await resultFlow.finally(() => undefined).run();
+      const result = await resultFlow.tapBoth(() => undefined).run();
 
       strictEqual(result._unsafeUnwrap(), value);
     });
@@ -2389,7 +2508,7 @@ describe('ResultFlow', () => {
       const resultFlow = ResultFlow.from<number, string>(N.err('error'));
       const effect = mock.fn();
 
-      await resultFlow.finally(effect).run();
+      await resultFlow.tapBoth(effect).run();
 
       deepEqual(effect.mock.calls[0]?.arguments, [N.err('error'), { context: {} }]);
     });
@@ -2398,7 +2517,7 @@ describe('ResultFlow', () => {
       const error = { reason: 'not-found' as const };
       const resultFlow = ResultFlow.from<number, typeof error>(N.err(error));
 
-      const result = await resultFlow.finally(() => undefined).run();
+      const result = await resultFlow.tapBoth(() => undefined).run();
 
       strictEqual(result._unsafeUnwrapErr(), error);
     });
@@ -2407,7 +2526,7 @@ describe('ResultFlow', () => {
       const resultFlow = ResultFlow.from<number, never, Context>(N.ok(10));
       const effect = mock.fn();
 
-      await resultFlow.finally(effect).run({ context });
+      await resultFlow.tapBoth(effect).run({ context });
 
       deepEqual(effect.mock.calls[0]?.arguments, [N.ok(10), { context }]);
     });
@@ -2416,7 +2535,7 @@ describe('ResultFlow', () => {
       let effectCompleted = false;
       const resultFlow = ResultFlow.from<number, never>(N.ok(10));
 
-      const result = await resultFlow.finally(async () => {
+      const result = await resultFlow.tapBoth(async () => {
         await sleep(0);
         effectCompleted = true;
       }).run();
@@ -2428,7 +2547,7 @@ describe('ResultFlow', () => {
     it('should be immutable', async () => {
       const effect = mock.fn();
       const r1 = ResultFlow.from(N.ok(10));
-      const r2 = r1.finally(effect);
+      const r2 = r1.tapBoth(effect);
 
       deepEqual(await r1.run(), N.ok(10));
       deepEqual(effect.mock.callCount(), 0);
@@ -2438,45 +2557,33 @@ describe('ResultFlow', () => {
     });
 
     it('should reject when the effect throws', async () => {
-      const resultFlow = ResultFlow.from<number, never>(N.ok(10)).finally(() => {
-        throw new Error('finally failed');
+      const resultFlow = ResultFlow.from<number, never>(N.ok(10)).tapBoth(() => {
+        throw new Error('tapBoth failed');
       });
 
-      await rejects(() => resultFlow.run(), /finally failed/);
+      await rejects(() => resultFlow.run(), /tapBoth failed/);
     });
 
     it('should reject when the effect rejects', async () => {
-      const resultFlow = ResultFlow.from<number, never>(N.ok(10)).finally(async () => {
-        throw new Error('finally rejected');
+      const resultFlow = ResultFlow.from<number, never>(N.ok(10)).tapBoth(async () => {
+        throw new Error('tapBoth rejected');
       });
 
-      await rejects(() => resultFlow.run(), /finally rejected/);
+      await rejects(() => resultFlow.run(), /tapBoth rejected/);
     });
 
     it('should not call the effect when the original flow throws or rejects', async () => {
       const effect = mock.fn();
       const throwingFlow = ResultFlow.of<number, never>(async () => {
         throw new Error('original flow threw');
-      }).finally(effect);
+      }).tapBoth(effect);
       const rejectingFlow = ResultFlow.from<number, never>(() =>
         Promise.reject(new Error('original flow rejected')),
-      ).finally(effect);
+      ).tapBoth(effect);
 
       await rejects(() => throwingFlow.run(), /original flow threw/);
       await rejects(() => rejectingFlow.run(), /original flow rejected/);
       deepEqual(effect.mock.callCount(), 0);
-    });
-  });
-
-  describe('tapBoth', () => {
-    it('should be an alias for finally', async () => {
-      const resultFlow = ResultFlow.from<number, string>(N.err('error'));
-      const effect = mock.fn();
-
-      const result = await resultFlow.tapBoth(effect).run();
-
-      deepEqual(result, N.err('error'));
-      deepEqual(effect.mock.calls[0]?.arguments, [N.err('error'), { context: {} }]);
     });
   });
 
