@@ -1,5 +1,6 @@
 export {
   ResultFlow,
+  type FlowExit,
   type ResultFlowExtras,
   type ResultFlowGenHelpers,
   type ResultFlowHelpers,

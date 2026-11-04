@@ -1675,18 +1675,23 @@ const result = await ResultFlow
 
 Runs and awaits cleanup exactly once per execution after the upstream flow completes. **Cleanup runs even when the upstream flow throws an exception or a promise rejects**, as well as when it returns `Ok` or `Err`. No `.catch()` is needed for cleanup to run.
 
-The operator is lazy; cleanup receives the current context and abort signal.
+The operator is lazy; cleanup receives the upstream exit and the current context and abort signal. `FlowExit` is exported from the package entry point.
 
 ```ts
+export type FlowExit<A, E> =
+  | { kind: 'ok'; value: A }
+  | { kind: 'err'; error: E }
+  | { kind: 'thrown'; cause: unknown };
+
 flow.finally(
-  effect: (extras: ResultFlowExtras<C>) => void | Promise<void>,
+  effect: (exit: FlowExit<A, E>, extras: ResultFlowExtras<C>) => void | Promise<void>,
 ): ResultFlow<A, E, C>
 ```
 
 ```ts
 const result = await ResultFlow
   .from(() => saveOrder(order))
-  .finally(async ({ context }) => {
+  .finally(async (_exit, { context }) => {
     await releaseResources(context.requestId);
   })
   .run({ context: { requestId: 'req-123' } });
@@ -1708,12 +1713,35 @@ await ResultFlow
 
 This follows JavaScript `try/finally` semantics: if cleanup succeeds, the original success value, typed failure, or thrown value is preserved. If cleanup throws or rejects, its exception replaces the upstream outcome, including an earlier exception or typed failure, and execution rejects unless a downstream `.catch()` handles it. Failures raised by upstream `fail()` and `tryTo()` remain typed `Err` results when cleanup succeeds.
 
-Use `.tapBoth((result, extras) => …)` for effects that need to inspect the returned Result.
+Cleanup callbacks can omit unused parameters. To access only extras, use `(_exit, extras)`. Use `.tapBoth((result, extras) => …)` for callbacks that need the original Result object.
+
+For rollback after initialization fails, narrow `exit.kind` to retain the original typed failure or thrown value if rollback also fails:
+
+```ts
+const result = await ResultFlow
+  .from(() => initialize()) // Returns a Result or a promise of a Result.
+  .finally(async (exit) => {
+    if (exit.kind === 'ok') return; // Initialization succeeded; no rollback needed.
+
+    try {
+      await rollback();
+    } catch (cleanupCause) {
+      const originalFailure = exit.kind === 'err' ? exit.error : exit.cause;
+      throw new AggregateError(
+        [originalFailure, cleanupCause],
+        'Initialization and rollback failed',
+      );
+    }
+  })
+  .run();
+```
+
+If rollback succeeds, the original failure is preserved. If rollback fails, `run()` rejects with the `AggregateError`. The `thrown` variant retains the original thrown value, including non-`Error` values.
 
 Ordering with `.catch()` matters:
 
 - `flow.finally(cleanup).catch(handler)` runs cleanup before the handler. The handler can catch a cleanup exception.
-- `flow.catch(handler).finally(cleanup)` runs cleanup after the handler, even if the handler throws or rejects.
+- `flow.catch(handler).finally(cleanup)` lets cleanup observe the outcome after recovery (`ok` or `err`), or `thrown` if the handler throws or rejects.
 
 ### `tapBoth`
 

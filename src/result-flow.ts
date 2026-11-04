@@ -8,6 +8,11 @@ type DefaultContext = Record<never, never>;
 type BaseContext = Record<string, any>;
 type PolymorphicResult<A, E, C extends BaseContext = DefaultContext> = ResultFlow<A, E, C> | Promise<Result<A, E>> | Result<A, E> | ResultAsync<A, E>;
 
+export type FlowExit<A, E> =
+  | { kind: 'ok'; value: A }
+  | { kind: 'err'; error: E }
+  | { kind: 'thrown'; cause: unknown };
+
 export interface ResultFlowHelpers<E, C extends BaseContext = DefaultContext> {
   tryTo<A>(result: PolymorphicResult<A, E, C>): Promise<A>;
   tryTo<A, E2>(
@@ -462,13 +467,24 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
   }
 
   finally(
-    effect: (extras: ResultFlowExtras<C>) => void | Promise<void>,
+    effect: (exit: FlowExit<A, E>, extras: ResultFlowExtras<C>) => void | Promise<void>,
   ): ResultFlow<A, E, C> {
-    return ResultFlow.of<A, E, C>(async ({ tryTo }, extras) => {
+    return ResultFlow.of<A, E, C>(async ({ fail }, extras) => {
+      let exit: FlowExit<A, E>;
       try {
-        return await tryTo(this.run(extras));
-      } finally {
-        await effect(extras);
+        const result = await this.executeWithExtras(extras);
+        exit = result.isOk()
+          ? { kind: 'ok', value: result.value }
+          : { kind: 'err', error: result.error };
+      } catch (cause: unknown) {
+        exit = { kind: 'thrown', cause };
+      }
+
+      await effect(exit, extras);
+      switch (exit.kind) {
+        case 'ok': return exit.value;
+        case 'err': return fail(exit.error);
+        case 'thrown': throw exit.cause;
       }
     });
   }

@@ -6,7 +6,7 @@ import { describe, it, mock, type Mock, type TestContext } from 'node:test';
 import * as N from 'neverthrow';
 import { Result } from 'neverthrow';
 import { ResultFlow } from './result-flow.js';
-import type { ResultFlowExtras, ResultFlowRunParams } from './index.js';
+import type { FlowExit, ResultFlowExtras, ResultFlowRunParams } from './index.js';
 
 type Row = {
   id: number;
@@ -2402,7 +2402,14 @@ describe('ResultFlow', () => {
         await started.promise;
         strictEqual(settled, false);
         strictEqual(effect.mock.callCount(), 1);
-        deepEqual(effect.mock.calls[0]?.arguments, [{ context: {} }]);
+        deepEqual(effect.mock.calls[0]?.arguments, [
+          outcome.expected?.isOk()
+            ? { kind: 'ok', value }
+            : outcome.expected?.isErr()
+              ? { kind: 'err', error }
+              : { kind: 'thrown', cause: outcome.cause ?? cause },
+          { context: {} },
+        ]);
         release.resolve();
         await checked;
         strictEqual(settled, true);
@@ -2422,9 +2429,54 @@ describe('ResultFlow', () => {
       }
     }
 
+    it('should propagate an AggregateError containing the original failure and rollback failure', async () => {
+      for (const upstream of [
+        ResultFlow.of<never, typeof error>(async ({ fail }) => fail(error)),
+        ResultFlow.from<never, never>(() => { throw cause; }),
+      ]) {
+        const rollbackCause = new Error('rollback failed');
+        let aggregate: AggregateError | undefined;
+        const cleanup = mock.fn(async (exit: FlowExit<never, typeof error>) => {
+          try {
+            await Promise.reject(rollbackCause);
+          } catch (cleanupCause) {
+            if (exit.kind === 'ok') throw cleanupCause;
+            aggregate = new AggregateError([
+              exit.kind === 'err' ? exit.error : exit.cause,
+              cleanupCause,
+            ], 'Initialization and rollback failed');
+            throw aggregate;
+          }
+        });
+        await rejects(upstream.finally(cleanup).run(), received => {
+          strictEqual(received, aggregate);
+          deepEqual(aggregate?.errors, [cleanup.mock.calls[0]?.arguments[0].kind === 'err' ? error : cause, rollbackCause]);
+          return true;
+        });
+        strictEqual(cleanup.mock.callCount(), 1);
+      }
+    });
+
+    it('should infer and narrow exit types and preserve the flow and context types', async () => {
+      type Equal<X, Y> = (<T>() => T extends X ? 1 : 2) extends (<T>() => T extends Y ? 1 : 2) ? true : false;
+      const assertType = <T extends true>(_value: T) => {};
+      const base = ResultFlow.from<number, 'original', Context>(N.ok(10));
+      const flow = base.finally((exit, extras) => {
+        assertType<Equal<typeof exit, FlowExit<number, 'original'>>>(true);
+        assertType<Equal<typeof extras, ResultFlowExtras<Context>>>(true);
+        switch (exit.kind) {
+          case 'ok': assertType<Equal<typeof exit.value, number>>(true); break;
+          case 'err': assertType<Equal<typeof exit.error, 'original'>>(true); break;
+          case 'thrown': assertType<Equal<typeof exit.cause, unknown>>(true); break;
+        }
+      });
+      assertType<Equal<typeof flow, typeof base>>(true);
+      deepEqual(await flow.run({ context }), N.ok(10));
+    });
+
     it('should remain lazy and use the current context and signal on each execution', async () => {
       const upstream = mock.fn(async (_helpers: unknown, extras: ResultFlowExtras<Context>) => extras.context.userId);
-      const cleanup = mock.fn((_extras: ResultFlowExtras<Context>) => {});
+      const cleanup = mock.fn((_exit: FlowExit<string, string>, _extras: ResultFlowExtras<Context>) => {});
       const base = ResultFlow.of<string, string, Context>(upstream);
       const flow: ResultFlow<string, string, Context> = base.finally(cleanup);
       strictEqual(upstream.mock.callCount(), 0);
@@ -2434,8 +2486,8 @@ describe('ResultFlow', () => {
         deepEqual(await flow.run(extras), N.ok(userId));
         strictEqual(upstream.mock.calls.at(-1)?.arguments[1].context, extras.context);
         strictEqual(upstream.mock.calls.at(-1)?.arguments[1].abortSignal, extras.abortSignal);
-        deepEqual(cleanup.mock.calls.at(-1)?.arguments, [extras]);
-        strictEqual(cleanup.mock.calls.at(-1)?.arguments[0].context, extras.context);
+        deepEqual(cleanup.mock.calls.at(-1)?.arguments, [{ kind: 'ok', value: userId }, extras]);
+        strictEqual(cleanup.mock.calls.at(-1)?.arguments[1].context, extras.context);
       }
       strictEqual(upstream.mock.callCount(), 2);
       strictEqual(cleanup.mock.callCount(), 2);
@@ -2473,7 +2525,14 @@ describe('ResultFlow', () => {
             if (handlerOutcome === 'reject') return Promise.reject(handlerCause);
             return handlerOutcome === 'Ok' ? N.ok('recovered') : N.err('converted');
           })
-          .finally(() => { events.push('cleanup'); })
+          .finally(exit => {
+            events.push('cleanup');
+            deepEqual(exit, handlerOutcome === 'Ok'
+              ? { kind: 'ok', value: 'recovered' }
+              : handlerOutcome === 'Err'
+                ? { kind: 'err', error: 'converted' }
+                : { kind: 'thrown', cause: handlerCause });
+          })
           .run();
         if (handlerOutcome === 'throw' || handlerOutcome === 'reject') {
           await rejects(execution, received => received === handlerCause);
