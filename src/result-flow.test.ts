@@ -6,7 +6,7 @@ import { describe, it, mock, type Mock, type TestContext } from 'node:test';
 import * as N from 'neverthrow';
 import { Result } from 'neverthrow';
 import { ResultFlow } from './result-flow.js';
-import type { FlowExit, ResultFlowExtras, ResultFlowRunParams } from './index.js';
+import type { FlowFailure as ObservedFailure, FlowExit, ResultFlowExtras, ResultFlowRunParams } from './index.js';
 
 type Row = {
   id: number;
@@ -2261,6 +2261,103 @@ describe('ResultFlow', () => {
   });
 
   describe('ifFailure', () => {
+    const error = { reason: 'typed failure' };
+    const cause = { reason: 'exception' };
+    const outcomes = [
+      { name: 'Err from fail', flow: ResultFlow.of<never, typeof error>(async ({ fail }) => fail(error)), typed: true },
+      { name: 'Err from tryTo', flow: ResultFlow.of<never, typeof error>(async ({ tryTo }) => tryTo(N.err(error))), typed: true },
+      { name: 'synchronous throw', flow: ResultFlow.from<never, typeof error>(() => { throw cause; }), cause },
+      { name: 'rejection', flow: ResultFlow.from<never, typeof error>(() => Promise.reject(cause)), cause },
+      { name: 'primitive rejection', flow: ResultFlow.from<never, typeof error>(() => Promise.reject('original')), cause: 'original' },
+      { name: 'undefined rejection', flow: ResultFlow.from<never, typeof error>(() => Promise.reject(undefined)), cause: undefined },
+    ];
+
+    for (const outcome of outcomes) {
+      it(`should await the effect once and preserve ${outcome.name}`, async () => {
+        const started = createDeferred<void>();
+        const release = createDeferred<void>();
+        const effect = mock.fn(async (_failure: ObservedFailure<typeof error>) => {
+          started.resolve();
+          await release.promise;
+        });
+        let settled = false;
+        const execution = outcome.flow.ifFailure(effect).run();
+        const checked = outcome.typed
+          ? execution.then(result => strictEqual(result._unsafeUnwrapErr(), error))
+          : rejects(execution, received => received === outcome.cause);
+        execution.then(() => { settled = true; }, () => { settled = true; });
+        await started.promise;
+        strictEqual(settled, false);
+        strictEqual(effect.mock.callCount(), 1);
+        deepEqual(effect.mock.calls[0]?.arguments[0], outcome.typed
+          ? { kind: 'err', error }
+          : { kind: 'thrown', cause: outcome.cause });
+        release.resolve();
+        await checked;
+        strictEqual(settled, true);
+        strictEqual(effect.mock.callCount(), 1);
+      });
+
+      for (const asynchronous of [false, true]) {
+        it(`should propagate cleanup AggregateError once after ${outcome.name} (${asynchronous ? 'async' : 'sync'})`, async () => {
+          const cleanupCause = new Error('rollback failed');
+          let aggregate: AggregateError | undefined;
+          const effect = mock.fn((failure: ObservedFailure<typeof error>) => {
+            aggregate = new AggregateError([
+              failure.kind === 'err' ? failure.error : failure.cause,
+              cleanupCause,
+            ], 'Operation and rollback failed');
+            if (asynchronous) return Promise.reject(aggregate);
+            throw aggregate;
+          });
+          await rejects(outcome.flow.ifFailure(effect).run(), received => {
+            strictEqual(received, aggregate);
+            deepEqual(aggregate?.errors, [outcome.typed ? error : outcome.cause, cleanupCause]);
+            return true;
+          });
+          strictEqual(effect.mock.callCount(), 1);
+        });
+      }
+    }
+
+    it('should infer failure and context types and preserve the flow type', async () => {
+      type Equal<X, Y> = (<T>() => T extends X ? 1 : 2) extends (<T>() => T extends Y ? 1 : 2) ? true : false;
+      const assertType = <T extends true>(_value: T) => {};
+      const base = ResultFlow.from<number, 'original', Context>(N.err('original'));
+      const flow = base.ifFailure((failure, extras) => {
+        assertType<Equal<typeof failure, ObservedFailure<'original'>>>(true);
+        assertType<Equal<typeof extras, ResultFlowExtras<Context>>>(true);
+        if (failure.kind === 'err') assertType<Equal<typeof failure.error, 'original'>>(true);
+        else assertType<Equal<typeof failure.cause, unknown>>(true);
+      });
+      assertType<Equal<typeof flow, ResultFlow<number, 'original', Context>>>(true);
+      deepEqual(await flow.run({ context }), N.err('original'));
+    });
+
+    it('should remain lazy and execute upstream once per run with the current extras', async () => {
+      for (const thrown of [false, true]) {
+        const upstream = mock.fn((_helpers: unknown, extras: ResultFlowExtras<Context>): Promise<number> => {
+          strictEqual(extras.context, context);
+          if (thrown) throw cause;
+          return Promise.resolve(10);
+        });
+        const effect = mock.fn((_failure: ObservedFailure<string>, _extras: ResultFlowExtras<Context>) => {});
+        const base = ResultFlow.of<number, string, Context>(upstream);
+        const flow = base.ifFailure(effect);
+        strictEqual(upstream.mock.callCount(), 0);
+        strictEqual(effect.mock.callCount(), 0);
+        for (let run = 1; run <= 2; run++) {
+          const extras = { context, abortSignal: new AbortController().signal };
+          if (thrown) await rejects(flow.run(extras), received => received === cause);
+          else deepEqual(await flow.run(extras), N.ok(10));
+          strictEqual(upstream.mock.callCount(), run);
+          strictEqual(upstream.mock.calls.at(-1)?.arguments[1].abortSignal, extras.abortSignal);
+          strictEqual(effect.mock.callCount(), thrown ? run : 0);
+          if (thrown) strictEqual(effect.mock.calls.at(-1)?.arguments[1], upstream.mock.calls.at(-1)?.arguments[1]);
+        }
+      }
+    });
+
     it('should execute the effect when it is a failure', async () => {
       const resultFlow = ResultFlow.of<number, 'error'>(async ({ fail }) => {
         fail('error');
@@ -2271,7 +2368,7 @@ describe('ResultFlow', () => {
       const value = result._unsafeUnwrapErr();
 
       deepEqual(value, 'error');
-      deepEqual(effect.mock.calls[0]?.arguments, ['error', { context: {} }]);
+      deepEqual(effect.mock.calls[0]?.arguments, [{ kind: 'err', error: 'error' }, { context: {} }]);
     });
 
     it('should not execute the effect when it is a success', async () => {
@@ -2306,7 +2403,7 @@ describe('ResultFlow', () => {
       const effect = mock.fn();
       await resultFlow.ifFailure(effect).run({ context });
 
-      deepEqual(effect.mock.calls[0]?.arguments, ['error', { context }]);
+      deepEqual(effect.mock.calls[0]?.arguments, [{ kind: 'err', error: 'error' }, { context }]);
     });
 
     it('should reject when the effect throws', async () => {
@@ -2340,6 +2437,18 @@ describe('ResultFlow', () => {
   });
 
   describe('tapError', () => {
+    it('should bypass upstream throws and rejections', async () => {
+      const cause = { reason: 'exception' };
+      for (const upstream of [
+        () => { throw cause; },
+        () => Promise.reject(cause),
+      ]) {
+        const effect = mock.fn();
+        await rejects(ResultFlow.from<number, string>(upstream).tapError(effect).run(), received => received === cause);
+        strictEqual(effect.mock.callCount(), 0);
+      }
+    });
+
     it('should execute the effect when it is a failure', async () => {
       const resultFlow = ResultFlow.of<number, 'error', Context>(async ({ fail }) => {
         fail('error');
@@ -3325,21 +3434,21 @@ describe('ResultFlow', () => {
 
     it('should not retry anything appended to resultFlow after the retryPolicy method', async () => {
       const n = 3;
-      const mockIfFailure = mock.fn();
+      const mockTapError = mock.fn();
       const mockOrElse = mock.fn(() => N.ok(success));
       const mockAction = mock.fn(() => N.err(defaultError));
       const flow = ResultFlow.from<number, string>(mockAction)
         .retryPolicy({ maxRetries: n })
-        .ifFailure(mockIfFailure)
+        .tapError(mockTapError)
         .orElse(mockOrElse);
 
       await flow.run();
 
       deepEqual(mockAction.mock.callCount(), n + 1);
-      deepEqual(mockIfFailure.mock.callCount(), 1);
-      deepEqual(mockIfFailure.mock.calls[0]?.arguments[0], defaultError);
+      deepEqual(mockTapError.mock.callCount(), 1);
+      deepEqual(mockTapError.mock.calls[0]?.arguments[0], defaultError);
       deepEqual(mockOrElse.mock.callCount(), 1);
-      deepEqual(mockIfFailure.mock.calls[0]?.arguments[0], defaultError);
+      deepEqual(mockTapError.mock.calls[0]?.arguments[0], defaultError);
     });
 
     it('should access the context', async () => {

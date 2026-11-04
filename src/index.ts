@@ -1,6 +1,7 @@
 export {
   ResultFlow,
   type FlowExit,
+  type FlowFailure,
   type ResultFlowExtras,
   type ResultFlowGenHelpers,
   type ResultFlowHelpers,

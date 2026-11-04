@@ -105,7 +105,7 @@ const flow = ResultFlow.of<User, UserError>(async ({ tryTo }) => {
   return tryTo(saveUser(validUser));
 })
   .retryPolicy({ maxRetries: 3 })
-  .ifFailure((error) => console.error(error));
+  .tapError((error) => console.error(error));
 
 const result = await flow.run();
 ```
@@ -178,7 +178,7 @@ import * as N from 'neverthrow';
 | Run flows | `run`, `runAndMatch` | You want to execute the lazy workflow and get either a `Promise<Result<A, E>>` or a plain value produced from both cases. |
 | Transform values | `map`, `mapError`, `mapBoth` | You want to change the success value, error value, or both without changing the control flow. |
 | Compose fallible work | `chain`, `orElse` | You want to continue with another operation that can itself fail. |
-| Observe results | `tap`, `tapError`, `finally`, `tapBoth` | You want side effects such as logging, metrics, or cleanup while preserving the original result. |
+| Observe results | `tap`, `tapError`, `ifFailure`, `finally`, `tapBoth` | You want side effects such as logging, metrics, or cleanup while preserving the original result. |
 | Validate success values | `ensure` | You want to keep a success value only if it passes a predicate. |
 | Handle exceptions | `catch` | You want to opt in to converting upstream exceptions into Results or recovering with `Ok`. |
 | Recover from failures | `recover` | You want to turn a failure into an infallible fallback success value. |
@@ -189,7 +189,7 @@ Aliases:
 
 - `lift` is an alias for `from`.
 - `tap` is the success-side observer. `ifSuccess` is kept as the more explicit name.
-- `tapError` is the failure-side observer. `ifFailure` is kept as the more explicit name.
+- `tapError` observes typed `Err` values; `ifFailure` observes both typed failures and exceptions.
 - `tapBoth` observes returned Results; `finally` runs cleanup for every outcome, including exceptions.
 
 ## Choosing Related Methods
@@ -268,7 +268,8 @@ runPeriodically -> run ongoing background work
 | Method | Runs On | Changes The Result? |
 | --- | --- | --- |
 | `tap` / `ifSuccess` | `Ok(value)` | No. |
-| `tapError` / `ifFailure` | `Err(error)` | No. |
+| `tapError` | `Err(error)` | No, unless the effect throws or rejects. |
+| `ifFailure` | `Err` or an exception | No, unless the effect throws or rejects. |
 | `tapBoth` | Both `Ok` and `Err` | No, unless the effect throws or rejects. |
 | `finally` | `Ok`, `Err`, or an exception | No, unless cleanup throws or rejects. |
 
@@ -541,7 +542,7 @@ declare function getFromDatabase(id: string): ResultAsync<Data, 'db-error'>;
 
 const result = await ResultFlow
   .from(getFromCache('item-1'))
-  .ifFailure((error) => console.log(`Cache failed: ${error}`))
+  .tapError((error) => console.log(`Cache failed: ${error}`))
   .orElse(() => getFromDatabase('item-1'))
   .run();
 
@@ -1629,30 +1630,46 @@ const result = await ResultFlow
 
 ### `ifFailure`
 
-Runs a side effect when the flow fails, then keeps the original failure value.
+Lazily observes both typed `Err` values and thrown exceptions or rejected promises. Each run executes the upstream flow once, forwarding the current context and abort signal. `Ok` skips the effect. The callback receives `FlowFailure<E>`, exported from the package entry point:
 
 ```ts
+export type FlowFailure<E> =
+  | { kind: 'err'; error: E }
+  | { kind: 'thrown'; cause: unknown };
+
 flow.ifFailure(
-  effect: (error: E, extras: { context: C; abortSignal?: AbortSignal }) => void | Promise<void>,
+  effect: (failure: FlowFailure<E>, extras: ResultFlowExtras<C>) => void | Promise<void>,
 ): ResultFlow<A, E, C>
 ```
 
-Example:
+Narrow `failure.kind` to handle either failure kind. Use `.tapError((error, extras) => …)` to observe only typed failures with the raw `E`.
+
+One callback can roll back after either kind of failure and retain the original failure if rollback also fails:
 
 ```ts
 const result = await ResultFlow
-  .from<number, string>(N.err('error'))
-  .ifFailure((error) => console.error(`Failed: ${error}`))
+  .from(() => initialize()) // Returns a Result or a promise of a Result.
+  .ifFailure(async (failure) => {
+    try {
+      await rollback();
+    } catch (cleanupCause) {
+      const originalFailure = failure.kind === 'err' ? failure.error : failure.cause;
+      throw new AggregateError(
+        [originalFailure, cleanupCause],
+        'Initialization and rollback failed',
+      );
+    }
+  })
   .run();
-
-// Err('error')
 ```
 
-If the effect throws or rejects, the exception is not handled by `ResultFlow`; `run()` rejects with that exception.
+The effect is awaited. If rollback succeeds, the original typed failure is preserved or the original thrown value is rethrown, including non-`Error` values. Upstream `fail()` and `tryTo()` failures arrive as `kind: 'err'`. If rollback throws or rejects, its exception propagates; the callback cannot catch its own failure and runs at most once per execution. In this example, `run()` rejects with the `AggregateError` containing both failures.
+
+Use `.catch()` for exception recovery and `.finally()` for unconditional cleanup, including success. A downstream `.catch()` can recover from either the original exception or a cleanup exception; placing `.catch()` before `.ifFailure()` makes the effect observe the outcome after recovery.
 
 ### `tapError`
 
-Alias for `ifFailure`.
+Observes only typed `Err` values with the raw error and current extras. Awaits the effect and preserves the original typed failure when the effect succeeds. `Ok` values and upstream exceptions bypass the callback. If the effect throws or rejects, `run()` rejects with that exception.
 
 ```ts
 flow.tapError(
@@ -1715,28 +1732,7 @@ This follows JavaScript `try/finally` semantics: if cleanup succeeds, the origin
 
 Cleanup callbacks can omit unused parameters. To access only extras, use `(_exit, extras)`. Use `.tapBoth((result, extras) => …)` for callbacks that need the original Result object.
 
-For rollback after initialization fails, narrow `exit.kind` to retain the original typed failure or thrown value if rollback also fails:
-
-```ts
-const result = await ResultFlow
-  .from(() => initialize()) // Returns a Result or a promise of a Result.
-  .finally(async (exit) => {
-    if (exit.kind === 'ok') return; // Initialization succeeded; no rollback needed.
-
-    try {
-      await rollback();
-    } catch (cleanupCause) {
-      const originalFailure = exit.kind === 'err' ? exit.error : exit.cause;
-      throw new AggregateError(
-        [originalFailure, cleanupCause],
-        'Initialization and rollback failed',
-      );
-    }
-  })
-  .run();
-```
-
-If rollback succeeds, the original failure is preserved. If rollback fails, `run()` rejects with the `AggregateError`. The `thrown` variant retains the original thrown value, including non-`Error` values.
+For rollback only after failure, use [`.ifFailure()`](#iffailure) to observe either a typed failure or an exception and aggregate the original failure with a rollback error.
 
 Ordering with `.catch()` matters:
 

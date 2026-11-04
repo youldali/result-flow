@@ -8,6 +8,10 @@ type DefaultContext = Record<never, never>;
 type BaseContext = Record<string, any>;
 type PolymorphicResult<A, E, C extends BaseContext = DefaultContext> = ResultFlow<A, E, C> | Promise<Result<A, E>> | Result<A, E> | ResultAsync<A, E>;
 
+export type FlowFailure<E> =
+  | { kind: 'err'; error: E }
+  | { kind: 'thrown'; cause: unknown };
+
 export type FlowExit<A, E> =
   | { kind: 'ok'; value: A }
   | { kind: 'err'; error: E }
@@ -451,7 +455,25 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     return this.ifSuccess(f);
   }
 
-  ifFailure(f: (value: E, extras: ResultFlowExtras<C>) => void | Promise<void>): ResultFlow<A, E, C> {
+  ifFailure(effect: (failure: FlowFailure<E>, extras: ResultFlowExtras<C>) => void | Promise<void>): ResultFlow<A, E, C> {
+    return ResultFlow.of<A, E, C>(async ({ fail }, extras) => {
+      let result: Result<A, E>;
+      try {
+        result = await this.executeWithExtras(extras);
+      } catch (cause: unknown) {
+        await effect({ kind: 'thrown', cause }, extras);
+        throw cause;
+      }
+
+      if (result.isErr()) {
+        await effect({ kind: 'err', error: result.error }, extras);
+        return fail(result.error);
+      }
+      return result.value;
+    });
+  }
+
+  tapError(f: (value: E, extras: ResultFlowExtras<C>) => void | Promise<void>): ResultFlow<A, E, C> {
     return ResultFlow.of<A, E, C>(async ({ fail }, extras) => {
       const result = await this.run(extras);
       if (result.isErr()) {
@@ -460,10 +482,6 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
       }
       return (result as N.Ok<A, E>).value;
     });
-  }
-
-  tapError(f: (value: E, extras: ResultFlowExtras<C>) => void | Promise<void>): ResultFlow<A, E, C> {
-    return this.ifFailure(f);
   }
 
   finally(
