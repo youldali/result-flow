@@ -2291,7 +2291,7 @@ describe('ResultFlow', () => {
         strictEqual(effect.mock.callCount(), 1);
         deepEqual(effect.mock.calls[0]?.arguments[0], outcome.typed
           ? { kind: 'err', error }
-          : { kind: 'thrown', cause: outcome.cause });
+          : { kind: 'exception', cause: outcome.cause });
         release.resolve();
         await checked;
         strictEqual(settled, true);
@@ -2516,7 +2516,7 @@ describe('ResultFlow', () => {
             ? { kind: 'ok', value }
             : outcome.expected?.isErr()
               ? { kind: 'err', error }
-              : { kind: 'thrown', cause: outcome.cause ?? cause },
+              : { kind: 'exception', cause: outcome.cause ?? cause },
           { context: {} },
         ]);
         release.resolve();
@@ -2576,7 +2576,7 @@ describe('ResultFlow', () => {
         switch (exit.kind) {
           case 'ok': assertType<Equal<typeof exit.value, number>>(true); break;
           case 'err': assertType<Equal<typeof exit.error, 'original'>>(true); break;
-          case 'thrown': assertType<Equal<typeof exit.cause, unknown>>(true); break;
+          case 'exception': assertType<Equal<typeof exit.cause, unknown>>(true); break;
         }
       });
       assertType<Equal<typeof flow, typeof base>>(true);
@@ -2640,7 +2640,7 @@ describe('ResultFlow', () => {
               ? { kind: 'ok', value: 'recovered' }
               : handlerOutcome === 'Err'
                 ? { kind: 'err', error: 'converted' }
-                : { kind: 'thrown', cause: handlerCause });
+                : { kind: 'exception', cause: handlerCause });
           })
           .run();
         if (handlerOutcome === 'throw' || handlerOutcome === 'reject') {

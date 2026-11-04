@@ -1635,7 +1635,7 @@ Lazily observes both typed `Err` values and thrown exceptions or rejected promis
 ```ts
 export type FlowFailure<E> =
   | { kind: 'err'; error: E }
-  | { kind: 'thrown'; cause: unknown };
+  | { kind: 'exception'; cause: unknown };
 
 flow.ifFailure(
   effect: (failure: FlowFailure<E>, extras: ResultFlowExtras<C>) => void | Promise<void>,
@@ -1698,7 +1698,7 @@ The operator is lazy; cleanup receives the upstream exit and the current context
 export type FlowExit<A, E> =
   | { kind: 'ok'; value: A }
   | { kind: 'err'; error: E }
-  | { kind: 'thrown'; cause: unknown };
+  | { kind: 'exception'; cause: unknown };
 
 flow.finally(
   effect: (exit: FlowExit<A, E>, extras: ResultFlowExtras<C>) => void | Promise<void>,
@@ -1737,7 +1737,7 @@ For rollback only after failure, use [`.ifFailure()`](#iffailure) to observe eit
 Ordering with `.catch()` matters:
 
 - `flow.finally(cleanup).catch(handler)` runs cleanup before the handler. The handler can catch a cleanup exception.
-- `flow.catch(handler).finally(cleanup)` lets cleanup observe the outcome after recovery (`ok` or `err`), or `thrown` if the handler throws or rejects.
+- `flow.catch(handler).finally(cleanup)` lets cleanup observe the outcome after recovery (`ok` or `err`), or `exception` if the handler throws or rejects.
 
 ### `tapBoth`
 
