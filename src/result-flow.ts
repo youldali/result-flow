@@ -409,6 +409,19 @@ export class ResultFlow<A, E, C extends BaseContext = DefaultContext> {
     });
   }
 
+  precondition<E2>(
+    predicate: (extras: ResultFlowExtras<C>) => boolean | Promise<boolean>,
+    onFailure: (extras: ResultFlowExtras<C>) => E2 | Promise<E2>,
+  ): ResultFlow<A, E | E2, C> {
+    return ResultFlow.of<A, E | E2, C>(async ({ fail, tryTo }, extras) => {
+      if (await predicate(extras)) {
+        return tryTo(this.run(extras));
+      }
+
+      return fail(await onFailure(extras));
+    });
+  }
+
   ensure<E2>(
     predicate: (value: A, extras: ResultFlowExtras<C>) => boolean | Promise<boolean>,
     onFailure: (value: A, extras: ResultFlowExtras<C>) => E2 | Promise<E2>,

@@ -1886,6 +1886,149 @@ describe('ResultFlow', () => {
     });
   });
 
+  describe('precondition', () => {
+    it('should be lazy, immutable, and re-evaluate on each run', async () => {
+      let allowed = false;
+      const action = mock.fn(() => N.ok(10));
+      const predicate = mock.fn(() => allowed);
+      const onFailure = mock.fn(() => 'closed');
+      const base = ResultFlow.from(action);
+      const guarded = base.precondition(predicate, onFailure);
+
+      deepEqual([action.mock.callCount(), predicate.mock.callCount(), onFailure.mock.callCount()], [0, 0, 0]);
+      deepEqual(await guarded.run(), N.err('closed'));
+      deepEqual(action.mock.callCount(), 0);
+      allowed = true;
+      deepEqual(await guarded.run(), N.ok(10));
+      deepEqual([action.mock.callCount(), predicate.mock.callCount(), onFailure.mock.callCount()], [1, 2, 1]);
+      allowed = false;
+      deepEqual(await base.run(), N.ok(10));
+    });
+
+    it('should await the predicate before starting any wrapped operators', async () => {
+      let resolvePredicate!: (value: boolean) => void;
+      const pending = new Promise<boolean>((resolve) => { resolvePredicate = resolve; });
+      const events: string[] = [];
+      const flow = ResultFlow.from(() => {
+        events.push('source');
+        return N.ok(10);
+      }).map((value) => {
+        events.push('map');
+        return value;
+      }).precondition(() => pending, () => 'closed');
+      const result = flow.run();
+      deepEqual(events, []);
+      resolvePredicate(true);
+      deepEqual(await result, N.ok(10));
+      deepEqual(events, ['source', 'map']);
+    });
+
+    it('should await async failures and skip the entire wrapped flow', async () => {
+      const action = mock.fn(() => N.ok(10));
+      const effect = mock.fn();
+      const flow = ResultFlow.from(action).finally(effect).precondition(
+        async () => false,
+        async () => ({ kind: 'closed' as const }),
+      );
+      deepEqual(await flow.run(), N.err({ kind: 'closed' }));
+      deepEqual(action.mock.callCount(), 0);
+      deepEqual(effect.mock.callCount(), 0);
+    });
+
+    it('should pass current context and abort signal to callbacks and the wrapped flow', async () => {
+      const seen: ResultFlowExtras<Context>[] = [];
+      let allowed = false;
+      const flow = ResultFlow.of<number, never, Context>(async (_, extras) => {
+        seen.push(extras);
+        return 10;
+      }).precondition((extras) => {
+        seen.push(extras);
+        return allowed;
+      }, (extras) => {
+        seen.push(extras);
+        return 'closed';
+      });
+      for (const runContext of [context, { ...context }]) {
+        const controller = new AbortController();
+        controller.abort();
+        deepEqual(await flow.run({ context: runContext, abortSignal: controller.signal }), allowed ? N.ok(10) : N.err('closed'));
+        for (const extras of seen.splice(0)) {
+          strictEqual(extras.context, runContext);
+          strictEqual(extras.abortSignal, controller.signal);
+        }
+        allowed = true;
+      }
+    });
+
+    it('should provide default extras without an abort signal', async () => {
+      const predicate = mock.fn(() => false);
+      const onFailure = mock.fn(() => 'closed');
+      await ResultFlow.from(N.ok(10)).precondition(predicate, onFailure).run();
+      deepEqual(predicate.mock.calls[0]?.arguments, [{ context: {} }]);
+      deepEqual(onFailure.mock.calls[0]?.arguments, [{ context: {} }]);
+    });
+
+    it('should forward upstream typed failures and exceptions when allowed', async () => {
+      const onFailure = mock.fn(() => 'closed');
+      deepEqual(await ResultFlow.from(N.err('original')).precondition(() => true, onFailure).run(), N.err('original'));
+      const cause = new Error('upstream');
+      await rejects(ResultFlow.from(() => { throw cause; }).precondition(() => true, onFailure).run(), (error) => error === cause);
+      deepEqual(onFailure.mock.callCount(), 0);
+    });
+
+    for (const callback of ['predicate', 'onFailure'] as const) {
+      for (const asyncCallback of [false, true]) {
+        it(`should propagate ${callback} ${asyncCallback ? 'rejections' : 'throws'} as exceptions`, async () => {
+          const cause = new Error(callback);
+          const throws = () => { throw cause; };
+          const faulty = asyncCallback ? async () => throws() : throws;
+          const action = mock.fn(() => N.ok(10));
+          const onFailure = mock.fn(callback === 'onFailure' ? faulty : () => 'closed');
+          const flow = ResultFlow.from(action).precondition(callback === 'predicate' ? faulty : () => false, onFailure);
+          await rejects(flow.run(), (error) => error === cause);
+          deepEqual(action.mock.callCount(), 0);
+          deepEqual(onFailure.mock.callCount(), callback === 'predicate' ? 0 : 1);
+          deepEqual(await flow.catch((error) => N.ok(error)).run(), N.ok(cause));
+        });
+      }
+    }
+
+    it('should recheck on each retry attempt, including after a guard failure', async () => {
+      let checks = 0;
+      const action = mock.fn(() => N.err('original'));
+      const flow = ResultFlow.from(action).precondition(() => ++checks > 1, () => 'closed')
+        .retryPolicy({ maxRetries: 2 });
+      deepEqual(await flow.run(), N.err('original'));
+      deepEqual(checks, 3);
+      deepEqual(action.mock.callCount(), 2);
+    });
+
+    it('should check once before entering a wrapped retry loop', async () => {
+      const action = mock.fn(() => N.err('original'));
+      const predicate = mock.fn(() => true);
+      const retrying = ResultFlow.from(action).retryPolicy({ maxRetries: 2 });
+      deepEqual(await retrying.precondition(predicate, () => 'closed').run(), N.err('original'));
+      deepEqual(predicate.mock.callCount(), 1);
+      deepEqual(action.mock.callCount(), 3);
+      deepEqual(await retrying.precondition(() => false, () => 'closed').run(), N.err('closed'));
+      deepEqual(action.mock.callCount(), 3);
+    });
+
+    it('should preserve success and context types and widen the error type', async () => {
+      type Equal<X, Y> = (<T>() => T extends X ? 1 : 2) extends (<T>() => T extends Y ? 1 : 2) ? true : false;
+      const assertType = <T extends true>(_value: T) => {};
+      const flow = ResultFlow.from<number, 'original', Context>(N.ok(10)).precondition((extras) => {
+        assertType<Equal<typeof extras, ResultFlowExtras<Context>>>(true);
+        return true;
+      }, async (extras) => {
+        assertType<Equal<typeof extras, ResultFlowExtras<Context>>>(true);
+        return { kind: 'closed' } as const;
+      });
+      assertType<Equal<typeof flow, ResultFlow<number, 'original' | { readonly kind: 'closed' }, Context>>>(true);
+      deepEqual(await flow.run({ context }), N.ok(10));
+    });
+  });
+
   describe('ensure', () => {
     it('should return the original success value when the predicate returns true', async () => {
       const result = await ResultFlow

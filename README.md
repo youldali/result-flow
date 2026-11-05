@@ -68,6 +68,7 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
     - [`finally`](#finally)
     - [`tapBoth`](#tapboth)
   - Validate
+    - [`precondition`](#precondition)
     - [`ensure`](#ensure)
   - Coordinate
     - [`ResultFlow.all`](#resultflowall)
@@ -1380,6 +1381,34 @@ const result = await ResultFlow
 ```
 
 `mapBoth` is useful when both success and error values should be normalized together. Prefer `map` when only the success value changes, and `mapError` when only the error value changes.
+
+### `precondition`
+
+Checks a condition before the wrapped flow starts, on every execution. If it passes, the wrapped flow runs with the same context and abort signal. If it fails, `onFailure` produces a typed `Err` and the entire wrapped flow is skipped. Constructing the wrapper does not execute either callback.
+
+```ts
+flow.precondition<E2>(
+  predicate: (extras: ResultFlowExtras<C>) => boolean | Promise<boolean>,
+  onFailure: (extras: ResultFlowExtras<C>) => E2 | Promise<E2>,
+): ResultFlow<A, E | E2, C>
+```
+
+For example, guard analysis work during shutdown:
+
+```ts
+return ResultFlow
+  .from(() => this.performAnalysis(filePath, offset))
+  .precondition(
+    () => !this.closing,
+    () => ({ kind: 'workspace-closing' } as const),
+  );
+```
+
+`.precondition()` checks before the wrapped flow starts, while `.ensure()` validates a successful upstream value. Use a factory with `.from()` as above to keep the underlying work lazy; an already-started promise cannot be deferred by the guard.
+
+Both callbacks may be synchronous or asynchronous. If either throws or rejects, execution rejects with that exception unless a downstream `.catch()` handles it. A false predicate is a typed failure, not an exception.
+
+Ordering with retries matters: `flow.precondition(...).retryPolicy(...)` checks on every attempt the policy executes, including retries of a failed check. `flow.retryPolicy(...).precondition(...)` checks once before entering the retry loop; a failed check skips the loop entirely.
 
 ### `ensure`
 
