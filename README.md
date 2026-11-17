@@ -1,10 +1,193 @@
 # ResultFlow
 
-`ResultFlow` is built on top of `neverthrow`. Both libraries are meant to be used together: `neverthrow` gives you typed `Result` and `ResultAsync` values, and `ResultFlow` adds a thunk-driven layer for composing work that should not execute until you call `run()`.
+Compose execution and failure handling around your neverthrow workflows.
 
-That lazy execution model makes it possible to extend `neverthrow` workflows with behavior such as retries, polling, periodic execution, timeouts, and context passing. A flow stops on the first `Err`, returns that error from `run()`, and skips the remaining success path.
+Write readable TypeScript operations with typed failures, then add retries,
+timeouts, execution guards and cleanup. Build the workflow once; execute it when needed.
 
-`ResultFlow` has no bundled runtime dependencies. `neverthrow` is a required peer dependency, so install it alongside `@youldali/result-flow`.
+`neverthrow` provides `Result` and `ResultAsync`. ResultFlow adds a lazy,
+composable execution layer around those operations. The two libraries work together.
+
+## Why ResultFlow?
+
+A remote read may need retries and a time limit, while the validation that follows
+should run only once. ResultFlow lets you express those policies around the relevant
+steps and reuse the resulting workflow wherever it needs to run.
+
+Given these application functions:
+
+```ts
+import { ResultFlow } from '@youldali/result-flow';
+import type { Result, ResultAsync } from 'neverthrow';
+
+type RecordData = { id: string; name: string };
+type ReadError = 'unavailable' | 'not-found';
+declare function readRemote(id: string): ResultAsync<RecordData, ReadError>;
+declare function validateRecord(data: RecordData): Result<RecordData, 'invalid'>;
+
+const readRecord = ResultFlow
+  .from(() => readRemote('record-1'))
+  .timeout({
+    ms: 1000,
+    onTimeout: () => 'timeout' as const,
+  })
+  .retryPolicy({
+    maxRetries: 2,
+    condition: (error) => error === 'unavailable' || error === 'timeout',
+    retryStrategy: { type: 'exponentialBackoff', baseDelayMs: 100 },
+  });
+
+const workflow = readRecord.chain(validateRecord);
+
+// Construction above does not call readRemote.
+const result = await workflow.run();
+// Result<RecordData, ReadError | 'timeout' | 'invalid'>
+```
+
+The read runs at most three times, retrying only `unavailable` or `timeout` failures;
+placing `timeout` before `retryPolicy` gives each attempt its own limit.
+Validation sits outside the retry scope and runs once if the read succeeds.
+A timeout can return before the underlying read stops; see [Core semantics](#core-semantics).
+
+## Installation
+
+```sh
+npm install @youldali/result-flow neverthrow
+```
+
+`neverthrow` (`^8.2.0`) is a required peer dependency. Published as ESM with
+TypeScript declarations. The `timeout` operator requires `AbortSignal.timeout`;
+combining an existing abort signal with the timeout signal also requires `AbortSignal.any`.
+
+## Quick Start
+
+Use `ResultFlow.of` for familiar `async`/`await` control flow. This self-contained
+example parses an order quantity, looks up its unit price, and calculates a total.
+
+```ts
+import { ResultFlow } from '@youldali/result-flow';
+import { err, errAsync, ok, okAsync, type Result, type ResultAsync } from 'neverthrow';
+
+type OrderError = 'invalid-quantity' | 'product-not-found';
+
+function parseQuantity(input: string): Result<number, 'invalid-quantity'> {
+  const quantity = Number(input);
+  return Number.isInteger(quantity) && quantity > 0
+    ? ok(quantity)
+    : err('invalid-quantity');
+}
+
+function findUnitPrice(
+  productId: string,
+  quantity: number,
+): ResultAsync<number, 'product-not-found'> {
+  if (productId !== 'notebook') return errAsync('product-not-found');
+  return okAsync(quantity >= 3 ? 10 : 12); // Bulk price for three or more.
+}
+
+// Describe the work; the callback has not executed yet.
+const total = ResultFlow.of<number, OrderError>(async ({ tryTo }) => {
+  const quantity = await tryTo(parseQuantity('3'));
+  const unitPrice = await tryTo(findUnitPrice('notebook', quantity));
+  return quantity * unitPrice;
+});
+
+// Execute when needed, then handle the final Result.
+const result = await total.run();
+if (result.isOk()) {
+  console.log(`Total: ${result.value}`); // Total: 30
+} else {
+  console.error(`Cannot calculate total: ${result.error}`);
+}
+```
+
+`tryTo` unwraps each `Ok`. If parsing returns `Err`, the price lookup is skipped
+and that failure becomes the final Result. Here, three notebooks at a unit price
+of 10 produce a total of 30.
+
+Prefer generators? [`ResultFlow.gen`](#resultflowgen) offers `yield*` syntax.
+`neverthrow` already supports linear composition through `safeTry`; ResultFlow's
+additional role is reusable execution policies and deferred execution.
+
+## Core semantics
+
+- **Factories defer work.** The callback passed to `of`, `gen`, or the factory
+  form of `from` runs on execution and can run again on a later execution or retry.
+- **Existing work stays started.** Wrapping an already-created `Promise` or
+  `ResultAsync` cannot defer or restart the operation that produced it.
+- **Typed failures stop the success path.** An `Err` skips subsequent success
+  steps; recovery operators can explicitly provide an alternative.
+- **Exceptions remain exceptions.** Unexpected throws and rejections reject
+  execution by default. [`catch`](#catch) handles upstream exceptions explicitly;
+  `orElse` and `recover` handle typed errors.
+- **Combinators return new flows.** Adding an operator leaves the original flow
+  unchanged. `run`, `runAndMatch` and `runPeriodically` execute work.
+- **Placement determines scope.** An operator wraps the preceding flow:
+  `flow.timeout(...).retryPolicy(...)` limits each attempt, while
+  `flow.retryPolicy(...).timeout(...)` limits the entire retry sequence.
+- **Cancellation is cooperative.** Callers can pass an `abortSignal` to `run`;
+  callbacks receive it through extras. Underlying operations must observe the
+  signal to stop. A timeout alone does not guarantee that work has stopped.
+
+For an application function `operation` returning a `ResultAsync`, compare:
+
+```ts
+ResultFlow.from(operation());       // Calls operation now; reuses its result.
+ResultFlow.from(() => operation()); // Calls operation on each execution.
+```
+
+Only the factory form invokes `operation` anew on each execution or retry.
+See [Context](#context) for passing execution context and
+[Choosing Related Methods](#choosing-related-methods) for operator comparisons.
+
+## API At A Glance
+
+Static constructors and coordinators are called on `ResultFlow`; other operators
+are called on a flow instance.
+
+| Intent | API | Purpose |
+| --- | --- | --- |
+| Create | [`of`](#resultflowof), [`from`](#resultflowfrom), [`lift`](#resultflowlift), [`gen`](#resultflowgen), [`isResultFlow`](#resultflowisresultflow) | Build flows or check whether a value is a flow. |
+| Execute | [`run`](#run), [`runAndMatch`](#runandmatch) | Get a `Promise<Result>` or handle both typed outcomes as a plain value. |
+| Transform | [`map`](#map), [`mapError`](#maperror), [`mapBoth`](#mapboth) | Transform success values, typed errors, or both. |
+| Compose and recover | [`chain`](#chain), [`orElse`](#orelse), [`recover`](#recover), [`catch`](#catch) | Continue success, fall back on `Err`, recover a value, or handle exceptions. |
+| Observe and clean up | [`tap`](#tap), [`ifSuccess`](#ifsuccess), [`tapError`](#taperror), [`ifFailure`](#iffailure), [`tapBoth`](#tapboth), [`finally`](#finally) | Observe outcomes or await cleanup. |
+| Validate and guard | [`ensure`](#ensure), [`precondition`](#precondition) | Validate a success value or check a guard before upstream execution. |
+| Control execution | [`retryPolicy`](#retrypolicy), [`repeatUntil`](#repeatuntil), [`timeout`](#timeout), [`runPeriodically`](#runperiodically) | Retry typed failures, poll successes, limit duration, or start interval work. |
+| Coordinate flows | [`all`](#resultflowall), [`allSettled`](#resultflowallsettled), [`firstOk`](#resultflowfirstok), [`race`](#resultflowrace) | Combine flows sequentially or concurrently. |
+
+`lift` aliases `from`; `tap` aliases `ifSuccess`. Other similarly named methods
+have distinct behavior:
+
+- `tapError` receives only typed errors; `ifFailure` receives either a typed error
+  or an exception, distinguished by `FlowFailure.kind`.
+- `tapBoth` observes returned Results; `finally` receives a `FlowExit` and runs
+  cleanup after success, typed failure, or exception. An observer or cleanup
+  callback that throws or rejects causes execution to reject.
+- `all` runs sequentially and stops on the first `Err`; `allSettled` runs in
+  parallel and collects Results in input order. Exceptions still reject execution.
+- `firstOk` tries flows sequentially until one succeeds; `race` starts them
+  concurrently and returns the first settled outcome, including a failure.
+- `runPeriodically` starts interval work and returns `void`, not a final Result.
+
+See the [API Reference](#api-reference) for signatures and
+[Helper Types](#helper-types) for callback shapes.
+
+## When to use ResultFlow
+
+Use ResultFlow when existing neverthrow operations need reusable execution
+policies, when a workflow needs retries, timeouts, execution-time guards or
+cleanup, or when describing work separately from running it makes callers simpler.
+
+For simple Result composition, plain neverthrow may be sufficient.
+
+## Documentation
+
+Explore the [Core Concepts](#core-concepts), [Recipes](#recipes), and
+[API Reference](#api-reference) in the expandable guide below.
+
+<details>
+<summary>Detailed guides and API reference</summary>
 
 ## Table Of Contents
 
@@ -78,56 +261,15 @@ That lazy execution model makes it possible to extend `neverthrow` workflows wit
 - [Helper Types](#helper-types)
 - [Development](#development)
 
-## Why ResultFlow
+### Guide example conventions
 
-`neverthrow` is great for making failures explicit, including asynchronous failures through `ResultAsync`:
-
-```ts
-import { type Result, type ResultAsync } from 'neverthrow';
-
-type User = { id: string; email: string };
-type UserError = 'not-found' | 'invalid-user' | 'save-failed';
-
-declare function findUser(id: string): ResultAsync<User, 'not-found'>;
-declare function validateUser(user: User): Result<User, 'invalid-user'>;
-declare function saveUser(user: User): ResultAsync<User, 'save-failed'>;
-```
-
-You can already work with those values directly in `neverthrow`. The main reason to use `ResultFlow` is different: a `ResultFlow` is a thunk. It describes a workflow without running it yet.
-
-That means you can build a flow, add behavior around it, and decide when it executes:
+The snippets below illustrate individual methods and may use application-specific
+helpers. They are not all standalone programs. Unless shown otherwise, they use:
 
 ```ts
 import { ResultFlow } from '@youldali/result-flow';
-
-const flow = ResultFlow.of<User, UserError>(async ({ tryTo }) => {
-  const user = await tryTo(findUser('user-1'));
-  const validUser = await tryTo(validateUser(user));
-  return tryTo(saveUser(validUser));
-})
-  .retryPolicy({ maxRetries: 3 })
-  .tapError((error) => console.error(error));
-
-const result = await flow.run();
-```
-
-The success path stays linear. The failure path stays typed. The work does not start until `run()` is called, so capabilities like `retryPolicy`, `repeatUntil`, `runPeriodically`, and context passing can be layered around the workflow before execution.
-
-## Installation
-
-```sh
-npm install @youldali/result-flow neverthrow
-```
-
-`@youldali/result-flow` is dependency-free at runtime except for its required `neverthrow` peer dependency. Installing both packages keeps `neverthrow` explicit in your application and avoids pulling extra transitive dependencies into your runtime.
-
-## Quick Start
-
-`ResultFlow` works with `neverthrow`'s `Result` and `ResultAsync` values. Use `Result` for synchronous domain operations and `ResultAsync` for asynchronous operations.
-
-```ts
-import { type Result, type ResultAsync } from 'neverthrow';
-import { ResultFlow } from '@youldali/result-flow';
+import * as N from 'neverthrow';
+import type { Result, ResultAsync } from 'neverthrow';
 
 type User = { id: string; email: string };
 type UserError = 'not-found' | 'invalid-email' | 'save-failed';
@@ -136,62 +278,6 @@ declare function findUser(id: string): ResultAsync<User, 'not-found'>;
 declare function validateEmail(user: User): Result<User, 'invalid-email'>;
 declare function saveUser(user: User): ResultAsync<User, 'save-failed'>;
 ```
-
-Build a flow with `ResultFlow.of` when you want familiar `async`/`await` syntax. `tryTo` unwraps `Ok` values and stops the flow on the first `Err`.
-
-```ts
-const result = await ResultFlow.of<User, UserError>(async ({ tryTo }) => {
-  const user = await tryTo(findUser('user-1'));
-  const validUser = await tryTo(validateEmail(user));
-  return tryTo(saveUser(validUser));
-}).run();
-```
-
-Or use `ResultFlow.gen` with `yield*` to avoid calling `tryTo` explicitly.
-
-```ts
-const result = await ResultFlow.gen<User, UserError>(async function* () {
-  const user = yield* findUser('user-1');
-  const validUser = yield* validateEmail(user);
-  return yield* saveUser(validUser);
-}).run();
-```
-
-Both versions return the same type:
-
-```ts
-// Promise<Result<User, UserError>>
-```
-
-Most examples below use `N.ok`, `N.err`, or `N.ResultAsync` from `neverthrow`:
-
-```ts
-import * as N from 'neverthrow';
-```
-
-## API At A Glance
-
-`ResultFlow` methods fall into a few small groups. If you know what kind of operation you want, this is the quickest way to find the right method.
-
-| Category | Methods | Use When |
-| --- | --- | --- |
-| Create flows | `of`, `from`, `lift`, `gen` | You want to build a lazy flow from `Result`, `ResultAsync`, `Promise<Result>`, or generator syntax. |
-| Run flows | `run`, `runAndMatch` | You want to execute the lazy workflow and get either a `Promise<Result<A, E>>` or a plain value produced from both cases. |
-| Transform values | `map`, `mapError`, `mapBoth` | You want to change the success value, error value, or both without changing the control flow. |
-| Compose fallible work | `chain`, `orElse` | You want to continue with another operation that can itself fail. |
-| Observe results | `tap`, `tapError`, `ifFailure`, `finally`, `tapBoth` | You want side effects such as logging, metrics, or cleanup while preserving the original result. |
-| Validate success values | `ensure` | You want to keep a success value only if it passes a predicate. |
-| Handle exceptions | `catch` | You want to opt in to converting upstream exceptions into Results or recovering with `Ok`. |
-| Recover from failures | `recover` | You want to turn a failure into an infallible fallback success value. |
-| Control execution | `retryPolicy`, `repeatUntil`, `timeout`, `runPeriodically` | You want retries, readiness polling, time limits, or background interval execution. |
-| Coordinate flows | `all`, `allSettled`, `race`, `firstOk` | You want to combine multiple lazy flows. |
-
-Aliases:
-
-- `lift` is an alias for `from`.
-- `tap` is the success-side observer. `ifSuccess` is kept as the more explicit name.
-- `tapError` observes typed `Err` values; `ifFailure` observes both typed failures and exceptions.
-- `tapBoth` observes returned Results; `finally` runs cleanup for every outcome, including exceptions.
 
 ## Choosing Related Methods
 
@@ -268,11 +354,13 @@ runPeriodically -> run ongoing background work
 
 | Method | Runs On | Changes The Result? |
 | --- | --- | --- |
-| `tap` / `ifSuccess` | `Ok(value)` | No. |
+| `tap` / `ifSuccess` | `Ok(value)` | No, unless the effect throws or rejects. |
 | `tapError` | `Err(error)` | No, unless the effect throws or rejects. |
 | `ifFailure` | `Err` or an exception | No, unless the effect throws or rejects. |
 | `tapBoth` | Both `Ok` and `Err` | No, unless the effect throws or rejects. |
 | `finally` | `Ok`, `Err`, or an exception | No, unless cleanup throws or rejects. |
+
+Successful observation preserves the original outcome. If an observer throws or rejects, execution rejects unless a downstream `.catch()` handles the exception.
 
 ### Combining Flows
 
@@ -314,9 +402,9 @@ ResultFlow.of<User, UserError, { requestId: string }>(async () => ({
 
 ### Lazy And Immutable
 
-A flow is a thunk: a description of work. Nothing runs until you call `run()`.
+A flow describes work. Factory callbacks are deferred until execution; wrapping an already-created Promise or ResultAsync does not undo work that has started. Use a factory to invoke an operation anew on each run or retry.
 
-All `ResultFlow` methods are immutable: they return new flows and do not mutate the original flow.
+Flow combinators return new flows and do not mutate the original flow. Execution methods such as `run`, `runAndMatch`, and `runPeriodically` start work.
 
 ```ts
 const base = ResultFlow.from(N.ok(10));
@@ -351,7 +439,7 @@ Use `Result` values for expected domain failures. Use exceptions for unexpected 
 
 Context is optional. Most flows do not need one, and can call `run()` with no arguments.
 
-If a flow declares the third type parameter, `run()` requires a context object and every callback receives it as `extras.context`.
+If a flow declares a context type with properties, `run()` requires a context object. Callbacks that accept extras receive the execution context through `extras.context`. For example, `retryPolicy` passes extras to `beforeRetry`, while its `condition` callback receives only the error.
 
 ```ts
 const flowWithoutContext = ResultFlow.from(N.ok(10));
@@ -480,7 +568,7 @@ type ApiError = { status: number; code: string };
 declare function findRawUser(id: string): N.ResultAsync<RawUser, 'not-found'>;
 
 const result = await ResultFlow
-  .from<RawUser, 'not-found'>(findRawUser('42'))
+  .from<RawUser, 'not-found'>(() => findRawUser('42'))
   .mapBoth({
     ok: (user): UserDto => ({
       id: user.id.toString(),
@@ -542,7 +630,7 @@ declare function getFromCache(id: string): ResultAsync<Data, 'cache-miss'>;
 declare function getFromDatabase(id: string): ResultAsync<Data, 'db-error'>;
 
 const result = await ResultFlow
-  .from(getFromCache('item-1'))
+  .from(() => getFromCache('item-1'))
   .tapError((error) => console.log(`Cache failed: ${error}`))
   .orElse(() => getFromDatabase('item-1'))
   .run();
@@ -562,7 +650,7 @@ type Profile = { name: string; theme: 'light' | 'dark' };
 declare function loadProfile(id: string): ResultAsync<Profile, 'not-found'>;
 
 const result = await ResultFlow
-  .from(loadProfile('user-1'))
+  .from(() => loadProfile('user-1'))
   .recover(() => ({ name: 'Guest', theme: 'light' }))
   .run();
 
@@ -576,8 +664,18 @@ const result = await ResultFlow
 Use `tapBoth` when you want to observe the completed `Result` without changing it.
 
 ```ts
+type Context = { requestId: string };
+type Order = { id: string };
+type SaveError = 'save-failed';
+
+declare function saveOrder(order: Order): N.ResultAsync<Order, SaveError>;
+declare const audit: {
+  log(entry: { requestId: string; status: 'saved' | 'failed' }): void;
+};
+
+const order: Order = { id: 'order-1' };
 const result = await ResultFlow
-  .from(() => saveOrder(order))
+  .from<Order, SaveError, Context>(() => saveOrder(order))
   .tapBoth((result, { context }) => {
     audit.log({
       requestId: context.requestId,
@@ -1491,7 +1589,7 @@ With a returned `ResultFlow`:
 ```ts
 const result = await ResultFlow
   .from(N.ok('user-1'))
-  .chain((id) => ResultFlow.from(findUser(id)))
+  .chain((id) => ResultFlow.from(() => findUser(id)))
   .run();
 ```
 
@@ -1735,8 +1833,16 @@ flow.finally(
 ```
 
 ```ts
+type Context = { requestId: string };
+type Order = { id: string };
+type SaveError = 'save-failed';
+
+declare function saveOrder(order: Order): N.ResultAsync<Order, SaveError>;
+declare function releaseResources(requestId: string): Promise<void>;
+
+const order: Order = { id: 'order-1' };
 const result = await ResultFlow
-  .from(() => saveOrder(order))
+  .from<Order, SaveError, Context>(() => saveOrder(order))
   .finally(async (_exit, { context }) => {
     await releaseResources(context.requestId);
   })
@@ -1922,7 +2028,7 @@ const result = await ResultFlow
 
 The timeout signal is composed with any existing `extras.abortSignal` using `AbortSignal.any`, and the composed signal is passed down to the wrapped flow. Pass `extras.abortSignal` to long-running operations so they can stop when the timeout emits; otherwise `timeout` can return early but the underlying work may continue in the background.
 
-If this timeout emits first, `onTimeout` builds the returned `Err`. If another signal aborts first, `onTimeout` is not called.
+If this timeout emits first, `onTimeout` builds the returned `Err`. External aborts rely on the underlying operation observing the signal. If that operation settles first, its outcome wins; otherwise the timeout can still expire and call `onTimeout`.
 
 Composition order with `retryPolicy` is significant: `flow.timeout(...).retryPolicy(...)` gives each retry attempt its own timeout, while `flow.retryPolicy(...).timeout(...)` applies one timeout to the whole retry sequence.
 
@@ -1999,10 +2105,16 @@ type Extras<C> = {
 
 `abortSignal` is a single composed signal. It may include a timeout signal, a caller-provided signal, or both.
 
+</details>
+
 ## Development
 
+Before contributing, install dependencies and run the same checks as CI:
+
 ```sh
-npm install
+npm ci
 npm test
 npm run build
 ```
+
+Use `npm run dev` to compile in watch mode.
