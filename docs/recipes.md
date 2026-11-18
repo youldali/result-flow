@@ -2,153 +2,72 @@
 
 [README](../README.md) · [API reference](api-reference.md)
 
-Focused examples for application workflows. `declare` statements describe illustrative application dependencies; supply those implementations to run the corresponding snippets.
+For examples of individual operations, see [chaining steps](api-reference.md#chain) and [validating a success value](api-reference.md#ensure). Each example stands alone. In snippets with `declare`, the declarations describe functions supplied by your application.
 
-- [Chain operations and stop on first failure](#chain-operations-and-stop-on-first-failure)
-- [Pipe values with chain](#pipe-values-with-chain)
-- [Validate a success value](#validate-a-success-value)
-- [Normalize success and error values together](#normalize-success-and-error-values-together)
-- [Handle one failure manually](#handle-one-failure-manually)
-- [Fallback to another flow](#fallback-to-another-flow)
-- [Recover with an infallible value](#recover-with-an-infallible-value)
-- [Run side effects after any result](#run-side-effects-after-any-result)
-- [Convert a flow to a response](#convert-a-flow-to-a-response)
-- [Retry transient failures](#retry-transient-failures)
-- [Poll until a success value is ready](#poll-until-a-success-value-is-ready)
-- [Run a flow periodically](#run-a-flow-periodically)
 - [Retry a remote read, then process](#retry-a-remote-read-then-process)
 - [Guard new work during shutdown](#guard-new-work-during-shutdown)
-- [Clean up after every outcome](#clean-up-after-every-outcome)
+- [Handle one failure manually](#handle-one-failure-manually)
 - [Convert selected exceptions](#convert-selected-exceptions)
+- [Convert a flow to a response](#convert-a-flow-to-a-response)
+- [Poll until a success value is ready](#poll-until-a-success-value-is-ready)
+- [Run a flow periodically](#run-a-flow-periodically)
+- [Clean up after every outcome](#clean-up-after-every-outcome)
 
-## Chain operations and stop on first failure
+## Retry a remote read, then process
 
-Use `ResultFlow.of` with `tryTo` when you want an `async` function body.
+A request handler can retry a transiently unavailable read. Once it has a user, it should validate that user just once.
 
 ```ts
-import { type Result, type ResultAsync } from 'neverthrow';
 import { ResultFlow } from '@youldali/result-flow';
+import type { Result, ResultAsync } from 'neverthrow';
 
 type User = { id: string; email: string };
-type UserError = 'not-found' | 'invalid-email' | 'save-failed';
+declare function readUser(): ResultAsync<User, 'unavailable' | 'not-found'>;
+declare function validateUser(user: User): Result<User, 'invalid'>;
 
-declare function findUser(id: string): ResultAsync<User, 'not-found'>;
-declare function validateEmail(user: User): Result<User, 'invalid-email'>;
-declare function saveUser(user: User): ResultAsync<User, 'save-failed'>;
-
-const result = await ResultFlow.of<User, UserError>(async ({ tryTo }) => {
-  const user = await tryTo(findUser('user-1'));
-  const validUser = await tryTo(validateEmail(user));
-  return tryTo(saveUser(validUser));
-}).run();
-```
-
-If any step returns `Err`, the next step is skipped and `run()` returns that error.
-
-
-See the [`of` API entry](api-reference.md#resultflowof) and the [failure-handling guide](failure-handling.md).
-
-## Pipe values with chain
-
-Use `chain` when each step consumes the previous success value.
-
-```ts
-import { ResultFlow } from '@youldali/result-flow';
-import * as N from 'neverthrow';
-
-const result = await ResultFlow
-  .from(N.ok('10'))
-  .chain((value) => N.ok(Number.parseInt(value, 10)))
-  .chain((value) => Promise.resolve(N.ok(value + 20)))
-  .run();
-
-// Ok(30)
-```
-
-`chain` accepts callbacks that return a `ResultFlow`, `Result`, `ResultAsync`, or `Promise<Result>`.
-
-
-See the [`chain` API entry](api-reference.md#chain) and the [failure-handling guide](failure-handling.md).
-
-## Validate a success value
-
-Use `ensure` when you want to keep a success value as-is only if it passes a predicate.
-
-```ts
-import { ResultFlow } from '@youldali/result-flow';
-import * as N from 'neverthrow';
-
-const result = await ResultFlow
-  .from(N.ok(10))
-  .ensure(
-    (value) => value >= 10,
-    (value) => ({ reason: 'too-small' as const, value }),
-  )
-  .run();
-
-// Ok(10)
-```
-
-When the predicate returns `false`, the flow becomes an `Err` using the value returned by `onFailure`.
-
-```ts
-import { ResultFlow } from '@youldali/result-flow';
-import * as N from 'neverthrow';
-
-const result = await ResultFlow
-  .from(N.ok(5))
-  .ensure(
-    (value) => value >= 10,
-    (value) => ({ reason: 'too-small' as const, value }),
-  )
-  .run();
-
-// Err({ reason: 'too-small', value: 5 })
-```
-
-
-See the [`ensure` API entry](api-reference.md#ensure) and the [failure-handling guide](failure-handling.md).
-
-## Normalize success and error values together
-
-Use `mapBoth` when both sides should be converted into the shapes your caller expects. It calls only the handler for the actual result.
-
-```ts
-import { ResultFlow } from '@youldali/result-flow';
-import * as N from 'neverthrow';
-
-type RawUser = { id: number; email: string };
-type UserDto = { id: string; email: string };
-type ApiError = { status: number; code: string };
-
-declare function findRawUser(id: string): N.ResultAsync<RawUser, 'not-found'>;
-
-const result = await ResultFlow
-  .from<RawUser, 'not-found'>(() => findRawUser('42'))
-  .mapBoth({
-    ok: (user): UserDto => ({
-      id: user.id.toString(),
-      email: user.email.toLowerCase(),
-    }),
-    err: (error): ApiError => ({
-      status: 404,
-      code: error,
-    }),
+const flow = ResultFlow.from(() => readUser())
+  .timeout({ ms: 500, onTimeout: () => 'timeout' as const })
+  .retryPolicy({
+    maxRetries: 2,
+    condition: error => error === 'unavailable' || error === 'timeout',
   })
-  .run();
-
-// Ok({ id: '42', email: 'ada@example.com' })
-// or Err({ status: 404, code: 'not-found' })
+  .chain(validateUser);
+const result = await flow.run();
 ```
 
-Use `map` or `mapError` when only one side changes. Use `mapBoth` when success and error normalization belong together.
+> [!IMPORTANT]
+> The 500 ms limit applies to each attempt. A timed-out read may still be running
+> when its retry starts. See [timeouts and cancellation](execution.md#timeouts-and-cancellation).
 
+The factory starts a fresh read on each attempt. Two retries allow at most three attempts. A missing user stops the flow immediately. Validation follows the policy, so a validation failure never triggers another read. See [operator order](execution.md#operator-order), [`retryPolicy`](api-reference.md#retrypolicy), and [`chain`](api-reference.md#chain).
 
-See the [`mapBoth` API entry](api-reference.md#mapboth) and the [failure-handling guide](failure-handling.md).
+## Guard new work during shutdown
+
+A worker may start shutting down between building a flow and taking the next job. Check its state just before taking work.
+
+```ts
+import { ResultFlow } from '@youldali/result-flow';
+import { okAsync } from 'neverthrow';
+
+let jobsStarted = 0;
+function processNext() {
+  jobsStarted += 1;
+  return okAsync('processed');
+}
+
+let shuttingDown = false;
+const flow = ResultFlow.from(() => processNext())
+  .precondition(() => !shuttingDown, () => 'shutting-down' as const);
+shuttingDown = true;
+const result = await flow.run(); // Err('shutting-down')
+console.log(jobsStarted); // 0
+```
+
+The guard sees the latest shutdown flag and can skip the factory entirely. Jobs already in progress continue. To recheck before each retry, place the guard inside the retry policy. See [execution guards](execution.md#guard-before-work-validate-after-success) and [`precondition`](api-reference.md#precondition).
 
 ## Handle one failure manually
 
-Skip `tryTo` for a specific operation when you want custom branching.
+A user import can substitute a fallback address for an invalid email. A blocked domain must stop the save.
 
 ```ts
 import { ResultFlow } from '@youldali/result-flow';
@@ -179,105 +98,32 @@ const result = await ResultFlow.of<User, UserError>(async ({ fail, tryTo }) => {
 }).run();
 ```
 
-Use `fail(error)` to stop the flow with a typed error from your own logic.
+Inspect the validation Result directly so the import can choose a fallback. Calling `fail` for the blocked domain returns its typed error and skips the save. Lookup and save still use `tryTo` to propagate their errors. See [inline helpers](failure-handling.md#inline-helpers) and [`ResultFlow.of`](api-reference.md#resultflowof).
 
+## Convert selected exceptions
 
-See the [`of` API entry](api-reference.md#resultflowof) and the [failure-handling guide](failure-handling.md).
-
-## Fallback to another flow
-
-Use `orElse` when a failure should trigger another fallible operation.
+A file adapter throws for missing files. Its callers expect a typed lookup error and need unexpected exceptions to reach their usual error handler.
 
 ```ts
 import { ResultFlow } from '@youldali/result-flow';
-import type { ResultAsync } from 'neverthrow';
+import { err } from 'neverthrow';
 
-type Data = { id: string; value: string };
+class MissingFileError extends Error {}
+declare function readFile(): Promise<string>;
 
-declare function getFromCache(id: string): ResultAsync<Data, 'cache-miss'>;
-declare function getFromDatabase(id: string): ResultAsync<Data, 'db-error'>;
-
-const result = await ResultFlow
-  .from(() => getFromCache('item-1'))
-  .tapError((error) => console.log(`Cache failed: ${error}`))
-  .orElse(() => getFromDatabase('item-1'))
-  .run();
-
-// Ok(data) or Err('db-error')
+const flow = ResultFlow.of<string, never>(async () => readFile())
+  .catch(cause => {
+    if (cause instanceof MissingFileError) return err('not-found' as const);
+    throw cause;
+  });
+const result = await flow.run(); // Ok(contents), Err('not-found'), or a rejection.
 ```
 
-The fallback is not executed when the first flow succeeds.
-
-
-See the [`orElse` API entry](api-reference.md#orelse) and the [failure-handling guide](failure-handling.md).
-
-## Recover with an infallible value
-
-Use `recover` when a failure can be replaced with a plain fallback value. The fallback returns the success value directly, not a `Result`, so the recovered flow has error type `never`.
-
-```ts
-import { ResultFlow } from '@youldali/result-flow';
-import type { ResultAsync } from 'neverthrow';
-
-type Profile = { name: string; theme: 'light' | 'dark' };
-
-declare function loadProfile(id: string): ResultAsync<Profile, 'not-found'>;
-
-const result = await ResultFlow
-  .from(() => loadProfile('user-1'))
-  .recover((): Profile => ({ name: 'Guest', theme: 'light' }))
-  .run();
-
-// Ok(existingProfile) on success;
-// Ok({ name: 'Guest', theme: 'light' }) after a typed failure.
-```
-
-`never` means no typed Err; execution can still throw or reject.
-
-`recover` is for infallible fallback values. Use `orElse` instead when the fallback work can fail and should return another `Result`, `ResultAsync`, or `ResultFlow`.
-
-
-See the [`recover` API entry](api-reference.md#recover) and the [failure-handling guide](failure-handling.md).
-
-## Run side effects after any result
-
-Use `tapBoth` when you want to observe the completed `Result` without changing it.
-
-```ts
-import { ResultFlow } from '@youldali/result-flow';
-import * as N from 'neverthrow';
-
-type Context = { requestId: string };
-type Order = { id: string };
-type SaveError = 'save-failed';
-
-declare function saveOrder(order: Order): N.ResultAsync<Order, SaveError>;
-declare const audit: {
-  log(entry: { requestId: string; status: 'saved' | 'failed' }): void;
-};
-
-const order: Order = { id: 'order-1' };
-const result = await ResultFlow
-  .from<Order, SaveError, Context>(() => saveOrder(order))
-  .tapBoth((result, { context }) => {
-    audit.log({
-      requestId: context.requestId,
-      status: result.isOk() ? 'saved' : 'failed',
-    });
-  })
-  .run({ context: { requestId: 'req-123' } });
-
-// The original Ok or Err is returned unchanged.
-```
-
-The effect runs for returned `Ok` and `Err` values. If the underlying flow throws or rejects instead of returning a `Result`, the effect is not called and `run()` rejects as usual.
-
-
-See the [`tapBoth` API entry](api-reference.md#tapboth) and the [failure-handling guide](failure-handling.md).
+Placing `catch` directly after the read limits the conversion to exceptions from that work. Rethrowing an unknown cause preserves the rejection. See [exception recovery](failure-handling.md#propagation-and-recovery) and [`catch`](api-reference.md#catch).
 
 ## Convert a flow to a response
 
-Use `runAndMatch` at application boundaries when both success and failure should become a plain value, such as an HTTP response, message acknowledgement, CLI exit payload, or UI state.
+An HTTP endpoint needs a status and request ID for both a successful update and a domain error.
 
 ```ts
 import { ResultFlow } from '@youldali/result-flow';
@@ -307,53 +153,11 @@ const response = await updateUserFlow('user-1').runAndMatch<Response>({
 }, { context: { requestId: 'req-123' } });
 ```
 
-`runAndMatch` handles returned Ok and Err values; unexpected exceptions still reject unless handled by the flow. It executes the flow immediately, just like `run`. Unlike chainable methods such as `map`, `chain`, or `recover`, it does not return a `ResultFlow`.
-
-
-See the [`runAndMatch` API entry](api-reference.md#runandmatch) and the [failure-handling guide](failure-handling.md).
-
-## Retry transient failures
-
-Use `retryPolicy` around the part of the flow that should be retried.
-
-```ts
-import { ResultFlow } from '@youldali/result-flow';
-import * as N from 'neverthrow';
-
-let attempt = 0;
-
-const result = await ResultFlow
-  .from(() => {
-    attempt += 1;
-    return attempt < 3 ? N.err('network-error' as const) : N.ok('data');
-  })
-  .retryPolicy({
-    maxRetries: 3,
-    condition: (error) => error === 'network-error',
-    beforeRetry: (error, retryNumber) => {
-      console.log(`Retry ${retryNumber} after ${error}`);
-    },
-    retryStrategy: {
-      type: 'exponentialBackoff',
-      baseDelayMs: 100,
-      maxDelayMs: 1000,
-    },
-  })
-  .run();
-
-// Ok('data')
-```
-
-`maxRetries` is the number of retries after the first attempt. With `maxRetries: 3`, the operation can run up to 4 times.
-
-`retryPolicy` only repeats `Err` results. If the flow returns `Ok(value)`, it stops even if that value represents a pending or not-ready state.
-
-
-See the [`retryPolicy` API entry](api-reference.md#retrypolicy) and the [execution guide](execution.md).
+Keep HTTP status codes in the endpoint. Awaiting `runAndMatch` executes the update and yields the selected handler’s response. Unexpected exceptions bypass both handlers and reject execution. See [`runAndMatch`](api-reference.md#runandmatch) and [handling the outcome at the application boundary](getting-started.md#handle-the-outcome-at-the-application-boundary).
 
 ## Poll until a success value is ready
 
-Use `repeatUntil` when a request should wait for one final ready value. It repeats only when the flow succeeds but the success value says the work is not ready yet.
+A job lookup can succeed while the job is still queued. The caller needs one final status and a limit on how many times to poll.
 
 ```ts
 import { ResultFlow } from '@youldali/result-flow';
@@ -386,20 +190,11 @@ const result = await ResultFlow
 // or Err({ reason: 'job-not-ready', lastStatus: 'queued' | 'running' })
 ```
 
-`repeatUntil` only repeats successful `Ok(value)` results whose predicate returns `false`. If the wrapped flow returns `Err`, it stops immediately and returns that original error. Unlike `runPeriodically`, the caller awaits one final `Result`.
-
-Choose between the execution helpers by the signal you want to react to:
-
-- `retryPolicy` repeats when the wrapped flow returns `Err`.
-- `repeatUntil` repeats when the wrapped flow returns `Ok(value)` but the value is not ready yet.
-- `runPeriodically` starts an interval loop and does not return a `Result`; it is for ongoing background work such as health checks.
-
-
-See the [`repeatUntil` API entry](api-reference.md#repeatuntil) and the [execution guide](execution.md).
+Each repeat calls the status factory again. A lookup error ends polling immediately. After the last allowed read, a pending status becomes `job-not-ready` with the last observed state. See [repeating work](execution.md#repeating-work) and [`repeatUntil`](api-reference.md#repeatuntil).
 
 ## Run a flow periodically
 
-Use `runPeriodically` for ongoing background loops such as health checks or scheduled maintenance.
+Schedule a service health check every five seconds. When the check reports a typed failure, try reconnecting before ending the checks.
 
 ```ts
 import { ResultFlow } from '@youldali/result-flow';
@@ -430,112 +225,79 @@ healthCheck.runPeriodically({
 
 ```
 
-Later, during application shutdown, stop the loop with the same controller:
+> [!IMPORTANT]
+> A tick can overlap a pending check or reconnect. An escaping exception from
+> either rejects the tick’s callback without calling `onInterruption` or clearing
+> the interval. The host may terminate on an unhandled rejection.
+> See [periodic execution](execution.md#periodic-execution).
+
+During shutdown, abort the controller to stop future ticks. In-flight operations
+continue unless they honor the signal.
 
 ```ts
 controller.abort();
 ```
 
-`runPeriodically` returns `void`. It starts an interval and reports typed-failure or abort interruptions through `onInterruption`; exceptions follow the behavior described in the execution guide.
-
-A returned Err stops the interval when no recovery is provided. Recovery returning
-Ok allows it to continue; recovery returning Err stops it and reports both errors
-through `onInterruption`. Throws and rejected promises instead reject the async
-interval callback, without invoking `onInterruption` or automatically clearing the
-interval. A `catch` on the main flow does not cover exceptions from `recoveryAction`;
-handle those separately within the recovery operation.
-
-
-See the [`runPeriodically` API entry](api-reference.md#runperiodically) and [periodic execution](execution.md#periodic-execution) for details.
-
-## Retry a remote read, then process
-
-Retry transient reads without repeating validation. The declarations describe application operations.
-
-```ts
-import { ResultFlow } from '@youldali/result-flow';
-import type { Result, ResultAsync } from 'neverthrow';
-
-type User = { id: string; email: string };
-declare function readUser(): ResultAsync<User, 'unavailable' | 'not-found'>;
-declare function validateUser(user: User): Result<User, 'invalid'>;
-
-const flow = ResultFlow.from(() => readUser())
-  .timeout({ ms: 500, onTimeout: () => 'timeout' as const })
-  .retryPolicy({
-    maxRetries: 2,
-    condition: error => error === 'unavailable' || error === 'timeout',
-  })
-  .chain(validateUser);
-const result = await flow.run();
-```
-
-There are at most three read attempts, each with its own timeout. Validation runs
-once after a successful read, outside the retry scope. See [execution order](execution.md#operator-order)
-and [`retryPolicy`](api-reference.md#retrypolicy).
-
-## Guard new work during shutdown
-
-Check shutdown state at execution time, before starting an application operation.
-
-```ts
-import { ResultFlow } from '@youldali/result-flow';
-import type { ResultAsync } from 'neverthrow';
-
-declare function processNext(): ResultAsync<string, 'job-failed'>;
-let shuttingDown = false;
-const flow = ResultFlow.from(() => processNext())
-  .precondition(() => !shuttingDown, () => 'shutting-down' as const);
-shuttingDown = true;
-const result = await flow.run(); // Err('shutting-down'); processNext is not called.
-```
-
-This prevents new work; it does not stop work already running. With retries,
-place the guard inside the retry scope to check every attempt. See
-[guards](execution.md#guard-before-work-validate-after-success) and [`precondition`](api-reference.md#precondition).
+A successful reconnect allows future checks. Without recovery, a typed check failure
+stops the interval. A typed reconnect failure also stops it and supplies both errors
+to `onInterruption`. Handle check exceptions in the health flow and reconnect
+exceptions inside the recovery operation. See [`runPeriodically`](api-reference.md#runperiodically).
 
 ## Clean up after every outcome
 
-Release resources after success, typed failure, or exception. These are illustrative application dependencies.
+An export needs a scratch buffer for the duration of one run. Acquire it inside the flow so each invocation owns the buffer it will release.
 
 ```ts
 import { ResultFlow } from '@youldali/result-flow';
-import type { ResultAsync } from 'neverthrow';
+import { err, ok } from 'neverthrow';
 
-type Context = { requestId: string };
-type Order = { id: string };
-declare function saveOrder(order: Order): ResultAsync<Order, 'save-failed'>;
-declare function releaseResources(requestId: string): Promise<void>;
+let nextId = 0;
 
-const flow = ResultFlow.from<Order, 'save-failed', Context>(() => saveOrder({ id: 'order-1' }))
-  .finally(async (_exit, { context }) => releaseResources(context.requestId));
-const result = await flow.run({ context: { requestId: 'req-123' } });
-```
-
-Cleanup is awaited. Successful cleanup preserves the outcome; a cleanup exception
-replaces it. See [cleanup ordering](failure-handling.md#cleanup-and-ordering),
-[rollback with AggregateError](failure-handling.md#rollback-while-preserving-both-failures),
-and [`finally`](api-reference.md#finally). An outer timeout can still settle before
-underlying cleanup finishes.
-
-## Convert selected exceptions
-
-Convert a known exception into a domain Err while letting unexpected exceptions propagate.
-
-```ts
-import { ResultFlow } from '@youldali/result-flow';
-import { err } from 'neverthrow';
-
-class MissingFileError extends Error {}
-declare function readFile(): Promise<string>;
-
-const flow = ResultFlow.of<string, never>(async () => readFile())
-  .catch(cause => {
-    if (cause instanceof MissingFileError) return err('not-found' as const);
-    throw cause;
+function acquireBuffer(available: boolean) {
+  if (!available) return err('busy' as const);
+  const id = ++nextId;
+  const rows: string[] = [];
+  console.log('open', id);
+  return ok({
+    write(row: string) {
+      rows.push(row);
+      return rows.length;
+    },
+    close() {
+      rows.length = 0;
+      console.log('close', id);
+    },
   });
-const result = await flow.run(); // Ok(contents), Err('not-found'), or a rejection.
+}
+
+function exportRow(row: string, available = true) {
+  return ResultFlow.from(() => acquireBuffer(available)).chain(buffer =>
+    ResultFlow.from(() => {
+      if (!row) return err('empty-row' as const);
+      // Simulate an unexpected write exception.
+      if (row === 'broken') throw new Error('write failed');
+      return ok(buffer.write(row));
+    }).finally(() => buffer.close()),
+  );
+}
+
+const exportAda = exportRow('Ada');
+await exportAda.run();           // open 1, close 1 → Ok(1)
+await exportAda.run();           // open 2, close 2 → Ok(1)
+await exportRow('').run();       // open 3, close 3 → Err('empty-row')
+try {
+  await exportRow('broken').run(); // open 4, close 4
+} catch (cause) {
+  console.log(cause instanceof Error && cause.message); // write failed
+}
+await exportRow('Ada', false).run(); // Err('busy'), no open or close
 ```
 
-The handler covers only preceding work; exceptions in later operators need another
-catch. See [exception recovery](failure-handling.md#propagation-and-recovery) and [`catch`](api-reference.md#catch).
+Only successful acquisition enters `chain`. Its callback captures that run’s buffer and attaches cleanup to the deferred write before it executes. Concurrent runs each close their own buffer. ResultFlow awaits cleanup and preserves the work’s outcome when cleanup succeeds. If cleanup throws or rejects, that exception replaces the original outcome. See [`finally`](api-reference.md#finally) and [cleanup ordering](failure-handling.md#cleanup-and-ordering).
+
+> [!IMPORTANT]
+> Cleanup runs after the wrapped work settles; attaching it does not cancel
+> that work. For asynchronous operations, an outer timeout can settle before
+> the underlying work and its cleanup finish. See
+> [timeouts and cancellation](execution.md#timeouts-and-cancellation) and
+> [generator cleanup](failure-handling.md#generator-cleanup).

@@ -162,9 +162,12 @@ aggregate. See [`ifFailure`](api-reference.md#iffailure) and [`finally`](api-ref
 
 ## Generator cleanup
 
-The `.finally()` operator is separate from JavaScript `try/finally` inside a
-generator. The current `gen` driver advances with `next()` but does not call
-`return()` or `throw()` on a generator suspended at a failed yield. Therefore a
-JavaScript finally around that yield is not guaranteed to execute when the yielded
-Result is Err or the yielded operation rejects. Attach ResultFlow `.finally()`
-to the constructed flow for cleanup after the driver's execution settles.
+> [!IMPORTANT]
+> **Current limitation.** When `gen` stops on an Err from a yielded step, or the
+> step rejects while the generator is suspended, the driver exits without calling
+> the generator’s `return()` or `throw()`. A JavaScript `finally` surrounding
+> that yield can therefore remain unexecuted.
+
+After acquiring a resource, attach ResultFlow’s [`finally`](api-reference.md#finally)
+to the flow that uses it. That execution awaits cleanup after its work settles.
+See the [resource ownership example](recipes.md#clean-up-after-every-outcome).

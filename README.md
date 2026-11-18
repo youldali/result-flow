@@ -8,6 +8,8 @@ timeouts, execution guards and cleanup. Build the workflow once; execute it when
 `neverthrow` provides `Result` and `ResultAsync`. ResultFlow adds a lazy,
 composable execution layer around those operations. The two libraries work together.
 
+[Getting started](docs/getting-started.md) · [API reference](docs/api-reference.md) · [Docs on GitHub](https://github.com/youldali/result-flow/tree/main/docs)
+
 ## Why ResultFlow?
 
 A remote read may need retries and a time limit, while the validation that follows
@@ -47,7 +49,7 @@ const result = await workflow.run();
 The read runs at most three times, retrying only `unavailable` or `timeout` failures;
 placing `timeout` before `retryPolicy` gives each attempt its own limit.
 Validation sits outside the retry scope and runs once if the read succeeds.
-A timeout can return before the underlying read stops; see [Core semantics](#core-semantics).
+A timeout can return while the underlying read is still running. See [Timeouts and cancellation](docs/execution.md#timeouts-and-cancellation).
 
 ## Installation
 
@@ -105,29 +107,22 @@ if (result.isOk()) {
 and that failure becomes the final Result. Here, three notebooks at a unit price
 of 10 produce a total of 30.
 
-Prefer generators? [`ResultFlow.gen`](docs/api-reference.md#resultflowgen) offers `yield*` syntax.
-`neverthrow` already supports linear composition through `safeTry`; ResultFlow's
-additional role is reusable execution policies and deferred execution.
+## Documentation
+
+| Guide | What you'll find |
+| --- | --- |
+| [Getting started](docs/getting-started.md) | Extend the order example with a retryable lookup and handle the result. |
+| [Core concepts](docs/core-concepts.md) | Understand deferred work, typed inputs, and execution context. |
+| [Execution](docs/execution.md) | Decide which steps to retry, time out, or run together. |
+| [Failure handling](docs/failure-handling.md) | Recover from typed errors, handle exceptions, and clean up. |
+| [Recipes](docs/recipes.md) | Adapt examples for polling a job or turning a flow into a response. |
+| [API reference](docs/api-reference.md) | Look up method signatures, defaults, and helper types. |
 
 ## Core semantics
 
-- **Factories defer work.** The callback passed to `of`, `gen`, or the factory
-  form of `from` runs on execution and can run again on a later execution or retry.
-- **Existing work stays started.** Wrapping an already-created `Promise` or
-  `ResultAsync` cannot defer or restart the operation that produced it.
-- **Typed failures stop the success path.** An `Err` skips subsequent success
-  steps; recovery operators can explicitly provide an alternative.
-- **Exceptions remain exceptions.** Unexpected throws and rejections reject
-  execution by default. [`catch`](docs/api-reference.md#catch) handles upstream exceptions explicitly;
-  `orElse` and `recover` handle typed errors.
-- **Combinators return new flows.** Adding an operator leaves the original flow
-  unchanged. `run`, `runAndMatch` and `runPeriodically` execute work.
-- **Placement determines scope.** An operator wraps the preceding flow:
-  `flow.timeout(...).retryPolicy(...)` limits each attempt, while
-  `flow.retryPolicy(...).timeout(...)` limits the entire retry sequence.
-- **Cancellation is cooperative.** Callers can pass an `abortSignal` to `run`;
-  callbacks receive it through extras. Underlying operations must observe the
-  signal to stop. A timeout alone does not guarantee that work has stopped.
+- **Deferred work.** `of` and `gen` run their callbacks on execution. For repeatable work, pass a factory to `from`. Each run or retry that reaches it calls it again. Passing an existing Promise or ResultAsync reuses the work already started.
+- **Typed failures.** An `Err` skips later success steps. Unexpected throws and rejected promises reject execution by default.
+- **Policy scope.** Each operator returns a new flow. A policy wraps the steps before it, as the read example shows. See [Operator order](docs/execution.md#operator-order).
 
 For an application function `operation` returning a `ResultAsync`, compare:
 
@@ -136,61 +131,26 @@ ResultFlow.from(operation());       // Calls operation now; reuses its result.
 ResultFlow.from(() => operation()); // Calls operation on each execution.
 ```
 
-Only the factory form invokes `operation` anew on each execution or retry.
-See [Context](docs/core-concepts.md#context) for passing execution context and
-[Choosing Related Methods](docs/getting-started.md#choose-a-constructor) for operator comparisons.
-
 ## API At A Glance
 
-Static constructors and coordinators are called on `ResultFlow`; other operators
-are called on a flow instance.
+| Purpose | Representative methods |
+| --- | --- |
+| Construct a flow | `ResultFlow.of` builds an async workflow. `ResultFlow.from` wraps an operation. |
+| Compose steps | `map` transforms a success value. `chain` passes it to the next fallible step. |
+| Apply policies | `retryPolicy` retries selected typed failures. `timeout` limits how long to wait. |
+| Handle outcomes | `orElse` handles a typed error. `catch` handles an upstream exception. |
+| Execute | Await `run` for a Result or `runAndMatch` for the value from an outcome handler. |
 
-| Intent | API | Purpose |
-| --- | --- | --- |
-| Create | [`of`](docs/api-reference.md#resultflowof), [`from`](docs/api-reference.md#resultflowfrom), [`lift`](docs/api-reference.md#resultflowlift), [`gen`](docs/api-reference.md#resultflowgen), [`isResultFlow`](docs/api-reference.md#resultflowisresultflow) | Build flows or check whether a value is a flow. |
-| Execute | [`run`](docs/api-reference.md#run), [`runAndMatch`](docs/api-reference.md#runandmatch) | Get a `Promise<Result>` or handle both typed outcomes as a plain value. |
-| Transform | [`map`](docs/api-reference.md#map), [`mapError`](docs/api-reference.md#maperror), [`mapBoth`](docs/api-reference.md#mapboth) | Transform success values, typed errors, or both. |
-| Compose and recover | [`chain`](docs/api-reference.md#chain), [`orElse`](docs/api-reference.md#orelse), [`recover`](docs/api-reference.md#recover), [`catch`](docs/api-reference.md#catch) | Continue success, fall back on `Err`, recover a value, or handle exceptions. |
-| Observe and clean up | [`tap`](docs/api-reference.md#tap), [`ifSuccess`](docs/api-reference.md#ifsuccess), [`tapError`](docs/api-reference.md#taperror), [`ifFailure`](docs/api-reference.md#iffailure), [`tapBoth`](docs/api-reference.md#tapboth), [`finally`](docs/api-reference.md#finally) | Observe outcomes or await cleanup. |
-| Validate and guard | [`ensure`](docs/api-reference.md#ensure), [`precondition`](docs/api-reference.md#precondition) | Validate a success value or check a guard before upstream execution. |
-| Control execution | [`retryPolicy`](docs/api-reference.md#retrypolicy), [`repeatUntil`](docs/api-reference.md#repeatuntil), [`timeout`](docs/api-reference.md#timeout), [`runPeriodically`](docs/api-reference.md#runperiodically) | Retry typed failures, poll successes, limit duration, or start interval work. |
-| Coordinate flows | [`all`](docs/api-reference.md#resultflowall), [`allSettled`](docs/api-reference.md#resultflowallsettled), [`firstOk`](docs/api-reference.md#resultflowfirstok), [`race`](docs/api-reference.md#resultflowrace) | Combine flows sequentially or concurrently. |
-
-`lift` aliases `from`; `tap` aliases `ifSuccess`. Other similarly named methods
-have distinct behavior:
-
-- `tapError` receives only typed errors; `ifFailure` receives either a typed error
-  or an exception, distinguished by `FlowFailure.kind`.
-- `tapBoth` observes returned Results; `finally` receives a `FlowExit` and runs
-  cleanup after success, typed failure, or exception. An observer or cleanup
-  callback that throws or rejects causes execution to reject.
-- `all` runs sequentially and stops on the first `Err`; `allSettled` runs in
-  parallel and collects Results in input order. Exceptions still reject execution.
-- `firstOk` tries flows sequentially until one succeeds; `race` starts them
-  concurrently and returns the first settled outcome, including a failure.
-- `runPeriodically` starts interval work and returns `void`, not a final Result.
-
-See the [API Reference](docs/api-reference.md) for signatures and
-[Helper Types](docs/api-reference.md#public-helper-types-and-callback-helpers) for callback shapes.
+[Choose a constructor](docs/getting-started.md#choose-a-constructor) compares the entry points.
+For operator comparisons, see [how to choose a failure handler](docs/failure-handling.md#choose-a-method),
+[Repeating work](docs/execution.md#repeating-work), and [Coordinate flows](docs/execution.md#coordinate-flows).
+The [API reference](docs/api-reference.md) covers every method.
 
 ## When to use ResultFlow
 
-Use ResultFlow when existing neverthrow operations need reusable execution
-policies, when a workflow needs retries, timeouts, execution-time guards or
-cleanup, or when describing work separately from running it makes callers simpler.
-
-For simple Result composition, plain neverthrow may be sufficient.
-
-## Documentation
-
-| Guide | Purpose |
-| --- | --- |
-| [Getting started](docs/getting-started.md) | Build and run your first workflow. |
-| [Core concepts](docs/core-concepts.md) | Understand laziness, Result-like inputs, and context types. |
-| [Execution](docs/execution.md) | Guard, retry, poll, time, schedule, and coordinate work. |
-| [Failure handling](docs/failure-handling.md) | Recover, observe outcomes, and clean up. |
-| [Recipes](docs/recipes.md) | Combine APIs for practical application workflows. |
-| [API reference](docs/api-reference.md) | Look up signatures, defaults, and public helper types. |
+Use ResultFlow when your workflow needs reusable execution policies or when callers
+need to decide when work starts. For simple Result composition, plain neverthrow
+may be sufficient, including its `safeTry` helper for linear workflows.
 
 ## Development
 

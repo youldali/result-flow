@@ -54,6 +54,12 @@ application code.
 
 ## Timeouts and cancellation
 
+> [!IMPORTANT]
+> A timeout can end the caller’s wait while the operation keeps running. Cancellation
+> is cooperative: pass the signal to the operation, which must honor it to stop.
+> With `timeout` before `retryPolicy`, each attempt gets a fresh timeout. A retry
+> can overlap an unfinished attempt, and the total workflow can exceed that limit.
+
 [`timeout`](api-reference.md#timeout) races upstream execution against a timeout
 signal. When the timeout wins, `onTimeout` creates a typed Err. It requires
 `AbortSignal.timeout`; when a caller supplies an existing signal, combining it
@@ -76,17 +82,17 @@ controller.abort();
 const result = await execution;
 ```
 
-Cancellation is cooperative. An external abort is not automatically converted to
+An external abort is not automatically converted to
 an Err and does not by itself settle `run()`. The operation may return a Result,
 reject, or ignore the signal. If it ignores cancellation, the timeout can still
 expire. The first settlement wins, including an operation's rejection in response
 to an abort. A timeout does not interrupt synchronous CPU work.
 
-Backoff waits use ordinary `setTimeout` promises and do not observe abort signals.
-Retry and polling loops do not automatically stop on abort: they can start another
-attempt with an already-aborted signal. A timeout around them can return while the
-loop continues. Likewise, per-attempt timeouts can leave earlier attempts running
-when their underlying work ignores cancellation.
+> [!IMPORTANT]
+> **Current limitation:** After abort, `retryPolicy` can retry a matching Err and
+> `repeatUntil` can repeat a non-ready Ok. Backoff waits run for their full delay.
+> Further attempts may start with an already-aborted signal, even after an outer
+> timeout has returned.
 
 Cleanup inside a timed flow belongs to the underlying execution and may finish
 later, or never run if that execution never settles. Outer cleanup is awaited by
@@ -96,25 +102,27 @@ See [cleanup](failure-handling.md#cleanup-and-ordering).
 
 ## Periodic execution
 
-`runPeriodically` uses `setInterval`; the first execution occurs after the first
-interval delay. It does not wait for the preceding run or recovery to finish,
-so executions can overlap. It returns void and does not expose a completion promise.
+> [!IMPORTANT]
+> A new tick can start while a previous execution or its recovery is still pending.
+> If either throws or rejects and the exception escapes, the async interval callback
+> rejects. This bypasses `onInterruption` and leaves the interval registered.
+> The host may terminate the process on an unhandled rejection.
 
-An Err stops the interval unless `recoveryAction` returns Ok. A recovery that
-returns Err also stops it; `onInterruption` receives the original error and `recoveryError`
-(undefined without recovery). An abort event clears future ticks and reports
-`{ cause: 'aborted' }`, but in-flight work still depends on cooperative cancellation.
-The implementation only installs an abort listener: an already-aborted signal does
-not automatically prevent scheduling. Avoid starting the loop in that state.
+`runPeriodically` returns `void` and schedules its first check after one interval.
+A check that returns Err clears the interval unless `recoveryAction` returns Ok.
+On failure, `onInterruption` receives the original error and the recovery error
+(`undefined` when no recovery was supplied).
 
-A `catch` on the main flow can convert its exceptions into typed errors, but
-`recoveryAction` runs outside that flow's exception boundary. Its throws and
-rejected promises need separate handling within the recovery operation; the main
-flow's `catch` does not handle them. An escaping exception from either operation
-rejects the async interval callback without invoking `onInterruption` or
-automatically clearing the interval. If recovery instead returns Err, the interval
-stops and `onInterruption` receives the original error and recovery error. See the
-[periodic health-check recipe](recipes.md#run-a-flow-periodically).
+An abort event clears future ticks and reports `{ cause: 'aborted' }`. Checks and
+recoveries already in progress must honor the signal to stop.
+
+> [!IMPORTANT]
+> **Current limitation:** Passing an already-aborted signal does not prevent
+> scheduling. The scheduler listens for future abort events.
+
+Handle expected exceptions in the executed flow with `catch`. Handle recovery
+exceptions inside `recoveryAction`, which runs outside the main flow’s exception
+boundary. See the [periodic health-check recipe](recipes.md#run-a-flow-periodically).
 
 ## Coordinate flows
 
